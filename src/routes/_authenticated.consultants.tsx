@@ -1,19 +1,22 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { PageHeader } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { useConsultants, useCreateConsultant } from "@/lib/api";
-import { Plus, Upload, Sparkles, Phone, Mail } from "lucide-react";
-import { useState } from "react";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogTrigger,
+} from "@/components/ui/dialog";
+import { useConsultants, useCreateConsultant, useRequirements, useSeedDemoData } from "@/lib/api";
+import { matchConsultantToRequirements, type RequirementMatch } from "@/lib/matching";
+import { Plus, Upload, Sparkles, Phone, Mail, ArrowUpRight, CheckCircle2, AlertCircle } from "lucide-react";
+import { useState, useMemo } from "react";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/_authenticated/consultants")({
   head: () => ({
     meta: [
       { title: "Consultants — Jobib" },
-      { name: "description", content: "Your active bench and consultant profiles." },
+      { name: "description", content: "Your active bench and consultant profiles with intelligent requirement matching." },
     ],
   }),
   component: ConsultantsPage,
@@ -27,7 +30,19 @@ const STATUS_TONE = {
 
 function ConsultantsPage() {
   const { data: consultants = [], isLoading } = useConsultants();
+  const { data: requirements = [] } = useRequirements();
+  const seedDemo = useSeedDemoData();
   const [open, setOpen] = useState(false);
+  const [matchingConsultant, setMatchingConsultant] = useState<any | null>(null);
+
+  const navigate = useNavigate();
+
+  // Compute matches when a consultant is selected for matching
+  const matches = useMemo(() => {
+    if (!matchingConsultant || !requirements.length) return [];
+    return matchConsultantToRequirements(matchingConsultant, requirements);
+  }, [matchingConsultant, requirements]);
+
   return (
     <div>
       <PageHeader
@@ -35,50 +50,261 @@ function ConsultantsPage() {
         subtitle={`${consultants.length} consultants — ${consultants.filter((c: any) => c.bench_status === "available").length} available now`}
         actions={
           <Dialog open={open} onOpenChange={setOpen}>
-            <DialogTrigger asChild><Button size="sm"><Plus className="mr-1.5 h-4 w-4" />Add consultant</Button></DialogTrigger>
+            <DialogTrigger asChild>
+              <Button size="sm">
+                <Plus className="mr-1.5 h-4 w-4" /> Add consultant
+              </Button>
+            </DialogTrigger>
             <AddConsultantModal onDone={() => setOpen(false)} />
           </Dialog>
         }
       />
+
       {!isLoading && consultants.length === 0 && (
-        <p className="p-12 text-center text-sm text-muted-foreground">No consultants on the bench yet. Add one above, or seed demo data from the Dashboard.</p>
+        <p className="p-12 text-center text-sm text-muted-foreground">
+          No consultants on the bench yet. Add one above, or seed demo data from the Dashboard.
+        </p>
       )}
+
       <div className="grid gap-4 p-6 sm:grid-cols-2 xl:grid-cols-3">
         {consultants.map((c: any) => (
-          <div key={c.id} className="rounded-xl border border-border bg-surface p-5">
+          <div key={c.id} className="rounded-xl border border-border bg-surface p-5 transition-shadow hover:shadow-sm">
             <div className="flex items-start justify-between gap-3">
               <div className="flex items-center gap-3">
                 <div className="grid h-10 w-10 place-items-center rounded-full bg-accent text-sm font-semibold text-accent-foreground">
-                  {c.full_name.split(" ").map((p: string) => p[0]).join("")}
+                  {c.full_name
+                    .split(" ")
+                    .map((p: string) => p[0])
+                    .join("")}
                 </div>
                 <div>
-                  <div className="font-semibold">{c.full_name}</div>
-                  <div className="text-xs text-muted-foreground">{c.years_experience} yrs · {c.work_authorization}</div>
+                  <div className="font-semibold text-foreground">{c.full_name}</div>
+                  <div className="text-xs text-muted-foreground">
+                    {c.years_experience ? `${c.years_experience} yrs · ` : ""}
+                    {c.work_authorization || "Work auth not specified"}
+                  </div>
                 </div>
               </div>
-              <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${STATUS_TONE[c.bench_status as keyof typeof STATUS_TONE]}`}>
+              <span
+                className={`rounded-full px-2 py-0.5 text-[10px] font-medium capitalize ${
+                  STATUS_TONE[c.bench_status as keyof typeof STATUS_TONE] ?? "bg-muted text-muted-foreground"
+                }`}
+              >
                 {String(c.bench_status).replace("_", " ")}
               </span>
             </div>
+
             <div className="mt-3 flex flex-wrap gap-1">
               {(c.tech_stack ?? []).map((t: string) => (
-                <span key={t} className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">{t}</span>
+                <span
+                  key={t}
+                  className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
+                >
+                  {t}
+                </span>
               ))}
             </div>
+
             <dl className="mt-4 space-y-1 text-xs text-muted-foreground">
-              <div><dt className="inline font-medium text-foreground">Last project:</dt> {c.last_project_title} · {c.last_project_duration}</div>
-              <div><dt className="inline font-medium text-foreground">Available:</dt> {c.availability_date}</div>
-            </dl>
-            <div className="mt-4 flex items-center justify-between gap-2">
-              <div className="flex gap-2 text-muted-foreground">
-                <a href={`mailto:${c.email}`} className="rounded p-1.5 hover:bg-accent hover:text-accent-foreground"><Mail className="h-4 w-4" /></a>
-                <a href={`tel:${c.phone}`} className="rounded p-1.5 hover:bg-accent hover:text-accent-foreground"><Phone className="h-4 w-4" /></a>
+              <div>
+                <dt className="inline font-medium text-foreground">Last project:</dt>{" "}
+                {c.last_project_title || "Not listed"} {c.last_project_duration ? `· ${c.last_project_duration}` : ""}
               </div>
-              <Button size="sm" variant="outline"><Sparkles className="mr-1.5 h-4 w-4" />Match reqs</Button>
+              <div>
+                <dt className="inline font-medium text-foreground">Available:</dt>{" "}
+                {c.availability_date || "Immediate"}
+              </div>
+            </dl>
+
+            <div className="mt-4 flex items-center justify-between gap-2 pt-2 border-t border-border">
+              <div className="flex gap-2 text-muted-foreground">
+                {c.email && (
+                  <a
+                    href={`mailto:${c.email}`}
+                    className="rounded p-1.5 hover:bg-accent hover:text-accent-foreground"
+                    title={c.email}
+                  >
+                    <Mail className="h-4 w-4" />
+                  </a>
+                )}
+                {c.phone && (
+                  <a
+                    href={`tel:${c.phone}`}
+                    className="rounded p-1.5 hover:bg-accent hover:text-accent-foreground"
+                    title={c.phone}
+                  >
+                    <Phone className="h-4 w-4" />
+                  </a>
+                )}
+              </div>
+
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setMatchingConsultant(c)}
+              >
+                <Sparkles className="mr-1.5 h-4 w-4 text-primary" />
+                Match reqs
+              </Button>
             </div>
           </div>
         ))}
       </div>
+
+      {/* Requirement Matching Dialog */}
+      {matchingConsultant && (
+        <Dialog open={Boolean(matchingConsultant)} onOpenChange={(val) => !val && setMatchingConsultant(null)}>
+          <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+            <DialogHeader>
+              <div className="flex items-center gap-2">
+                <Sparkles className="h-5 w-5 text-primary" />
+                <DialogTitle>Matched Requirements for {matchingConsultant.full_name}</DialogTitle>
+              </div>
+              <DialogDescription>
+                Ranked by tech stack overlap, years of experience, and role suitability.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-3 py-2">
+              <div className="rounded-lg bg-muted/40 p-3 text-xs text-muted-foreground flex flex-wrap items-center gap-4">
+                <div>
+                  <span className="font-semibold text-foreground">Candidate Skills: </span>
+                  {(matchingConsultant.tech_stack ?? []).join(", ") || "None listed"}
+                </div>
+                <div>
+                  <span className="font-semibold text-foreground">Experience: </span>
+                  {matchingConsultant.years_experience} years
+                </div>
+              </div>
+
+              {requirements.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-border p-8 text-center space-y-3">
+                  <p className="text-sm text-muted-foreground">
+                    Your pipeline doesn't have any requirements yet to match against.
+                  </p>
+                  <div className="flex flex-wrap justify-center gap-3 pt-1">
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        toast.promise(seedDemo.mutateAsync(), {
+                          loading: "Loading demo requirements…",
+                          success: "Demo requirements loaded!",
+                          error: (e) => e?.message ?? "Failed to load demo data",
+                        });
+                      }}
+                      disabled={seedDemo.isPending}
+                    >
+                      <Sparkles className="mr-1.5 h-4 w-4" />
+                      Load Demo Requirements
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        setMatchingConsultant(null);
+                        navigate({ to: "/requirements" });
+                      }}
+                    >
+                      <Plus className="mr-1.5 h-4 w-4" /> Add Requirement
+                    </Button>
+                  </div>
+                </div>
+              ) : matches.length === 0 ? (
+                <p className="py-8 text-center text-sm text-muted-foreground">
+                  No active requirements found in pipeline to match.
+                </p>
+              ) : (
+                <div className="space-y-3">
+                  {matches.slice(0, 10).map((m: RequirementMatch) => {
+                    const r = m.requirement;
+                    const isHigh = m.matchPercentage >= 75;
+                    const isMid = m.matchPercentage >= 50 && m.matchPercentage < 75;
+                    const badgeTone = isHigh
+                      ? "bg-emerald-500/15 text-emerald-600 border-emerald-500/30"
+                      : isMid
+                      ? "bg-amber-500/15 text-amber-600 border-amber-500/30"
+                      : "bg-muted text-muted-foreground";
+
+                    return (
+                      <div
+                        key={r.id}
+                        className="rounded-xl border border-border bg-surface p-4 flex flex-col md:flex-row md:items-center justify-between gap-4 transition-colors hover:bg-accent/15"
+                      >
+                        <div className="space-y-1.5 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className={`rounded-md border px-2 py-0.5 text-xs font-bold tabular-nums ${badgeTone}`}>
+                              {m.matchPercentage}% Match
+                            </span>
+                            <span className="font-semibold text-foreground">{r.title}</span>
+                            <span className="text-xs text-muted-foreground">
+                              · {r.client_masked || r.vendor_name || "Direct Client"}
+                            </span>
+                          </div>
+
+                          <div className="text-xs text-muted-foreground flex flex-wrap gap-x-4 gap-y-1">
+                            {r.rate_max && (
+                              <span>
+                                Rate: <strong className="text-foreground">${r.rate_min ? `${r.rate_min}-$` : ""}{r.rate_max}/hr</strong>
+                              </span>
+                            )}
+                            {(r.location_city || r.location_state) && (
+                              <span>
+                                Location: {[r.location_city, r.location_state].filter(Boolean).join(", ")}
+                              </span>
+                            )}
+                            <span>
+                              Req-Score: <strong className="text-foreground">{r.req_score}</strong>
+                            </span>
+                          </div>
+
+                          {/* Matched skills */}
+                          <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                            <span className="text-[11px] font-medium text-muted-foreground">Matched:</span>
+                            {m.matchedSkills.map((s) => (
+                              <span key={s} className="rounded bg-emerald-500/10 text-emerald-600 px-1.5 py-0.2 text-[10px] font-medium">
+                                ✓ {s}
+                              </span>
+                            ))}
+                            {m.missingSkills.length > 0 && (
+                              <>
+                                <span className="ml-2 text-[11px] font-medium text-muted-foreground">Missing:</span>
+                                {m.missingSkills.slice(0, 3).map((s) => (
+                                  <span key={s} className="rounded bg-muted text-muted-foreground px-1.5 py-0.2 text-[10px]">
+                                    {s}
+                                  </span>
+                                ))}
+                              </>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 shrink-0">
+                          <Button
+                            size="sm"
+                            onClick={() => {
+                              setMatchingConsultant(null);
+                              navigate({
+                                to: "/submit",
+                                search: {
+                                  reqId: r.id,
+                                  consultantId: matchingConsultant.id,
+                                },
+                              });
+                            }}
+                          >
+                            Submit Candidate
+                            <ArrowUpRight className="ml-1 h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
     </div>
   );
 }
@@ -109,29 +335,53 @@ function AddConsultantModal({ onDone }: { onDone: () => void }) {
       toast.success("Consultant added");
       onDone();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Failed");
+      toast.error(e instanceof Error ? e.message : "Failed to add consultant");
     }
   }
 
   return (
     <DialogContent className="max-w-xl">
-      <DialogHeader><DialogTitle>Add consultant</DialogTitle></DialogHeader>
+      <DialogHeader>
+        <DialogTitle>Add Bench Consultant</DialogTitle>
+      </DialogHeader>
       <div className="grid gap-3 sm:grid-cols-2">
-        <div className="sm:col-span-2"><Label>Full name</Label><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Arjun Mehta" /></div>
-        <div><Label>Email</Label><Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="arjun@bench.dev" /></div>
-        <div><Label>Phone</Label><Input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+1 (469) 555-1010" /></div>
-        <div className="sm:col-span-2"><Label>Tech stack (comma separated)</Label><Input value={stack} onChange={(e) => setStack(e.target.value)} placeholder="Java, Spring Boot, AWS" /></div>
-        <div><Label>Years experience</Label><Input type="number" value={years} onChange={(e) => setYears(e.target.value)} placeholder="9" /></div>
-        <div><Label>Work authorization</Label><Input value={workAuth} onChange={(e) => setWorkAuth(e.target.value)} placeholder="USC / GC / H1B" /></div>
-        <div><Label>Availability date</Label><Input type="date" value={avail} onChange={(e) => setAvail(e.target.value)} /></div>
         <div className="sm:col-span-2">
-          <Label>Resume</Label>
-          <div className="mt-1 flex items-center justify-center gap-2 rounded-md border border-dashed border-border bg-muted/30 px-4 py-6 text-sm text-muted-foreground">
-            <Upload className="h-4 w-4" /> Upload coming in next pass
-          </div>
+          <Label>Full name</Label>
+          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Arjun Mehta" />
+        </div>
+        <div>
+          <Label>Email</Label>
+          <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="arjun@bench.dev" />
+        </div>
+        <div>
+          <Label>Phone</Label>
+          <Input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+1 (469) 555-1010" />
+        </div>
+        <div className="sm:col-span-2">
+          <Label>Tech stack (comma separated)</Label>
+          <Input value={stack} onChange={(e) => setStack(e.target.value)} placeholder="Java, Spring Boot, AWS, Kafka" />
+        </div>
+        <div>
+          <Label>Years experience</Label>
+          <Input type="number" value={years} onChange={(e) => setYears(e.target.value)} placeholder="9" />
+        </div>
+        <div>
+          <Label>Work authorization</Label>
+          <Input value={workAuth} onChange={(e) => setWorkAuth(e.target.value)} placeholder="USC / GC / H1B" />
+        </div>
+        <div className="sm:col-span-2">
+          <Label>Availability date</Label>
+          <Input type="date" value={avail} onChange={(e) => setAvail(e.target.value)} />
         </div>
       </div>
-      <div className="flex justify-end gap-2"><Button variant="outline" onClick={onDone}>Cancel</Button><Button onClick={save} disabled={create.isPending}>{create.isPending ? "Saving…" : "Save"}</Button></div>
+      <div className="flex justify-end gap-2 pt-2">
+        <Button variant="outline" onClick={onDone}>
+          Cancel
+        </Button>
+        <Button onClick={save} disabled={create.isPending}>
+          {create.isPending ? "Saving…" : "Save"}
+        </Button>
+      </div>
     </DialogContent>
   );
 }

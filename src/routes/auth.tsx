@@ -32,6 +32,18 @@ function AuthPage() {
     supabase.auth.getSession().then(({ data }) => {
       if (data.session) navigate({ to: "/dashboard" });
     });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session) {
+        navigate({ to: "/dashboard" });
+      }
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
   }, [navigate]);
 
   async function handleSubmit(e: React.FormEvent) {
@@ -39,26 +51,53 @@ function AuthPage() {
     setLoading(true);
     try {
       if (mode === "signup") {
-        const { error } = await supabase.auth.signUp({
-          email,
+        const { data, error } = await supabase.auth.signUp({
+          email: email.trim(),
           password,
           options: {
             emailRedirectTo: `${window.location.origin}/dashboard`,
             data: {
-              full_name: fullName || email.split("@")[0],
-              workspace_name: workspaceName || `${(fullName || email.split("@")[0])}'s Workspace`,
+              full_name: fullName.trim() || email.split("@")[0],
+              workspace_name: workspaceName.trim() || `${(fullName.trim() || email.split("@")[0])}'s Workspace`,
             },
           },
         });
         if (error) throw error;
+
+        if (!data.session) {
+          toast.info(
+            "Account created! Please check your email to confirm your account, or disable 'Confirm email' in Supabase to log in immediately.",
+            { duration: 8000 },
+          );
+          setMode("signin");
+          return;
+        }
+
         toast.success("Account created — signing you in…");
+        navigate({ to: "/dashboard" });
       } else {
-        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email: email.trim(),
+          password,
+        });
         if (error) throw error;
+        if (data.session) {
+          toast.success("Signed in successfully!");
+          navigate({ to: "/dashboard" });
+        }
       }
-      navigate({ to: "/dashboard" });
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Authentication failed");
+    } catch (err: any) {
+      const msg = err?.message || "Authentication failed";
+      if (msg.toLowerCase().includes("email not confirmed")) {
+        toast.error(
+          "Email not confirmed! Please click the verification link in your email, or disable 'Confirm email' in your Supabase dashboard.",
+          { duration: 8000 },
+        );
+      } else if (msg.toLowerCase().includes("invalid login credentials")) {
+        toast.error("Invalid email or password. Please verify and try again.");
+      } else {
+        toast.error(msg);
+      }
     } finally {
       setLoading(false);
     }

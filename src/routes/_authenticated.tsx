@@ -1,6 +1,5 @@
 import { createFileRoute, Outlet, redirect } from "@tanstack/react-router";
 import { AppShell } from "@/components/app-shell";
-import { Toaster } from "@/components/ui/sonner";
 import { supabase } from "@/integrations/supabase/client";
 
 export const Route = createFileRoute("/_authenticated")({
@@ -13,7 +12,6 @@ export const Route = createFileRoute("/_authenticated")({
   component: () => (
     <AppShell>
       <Outlet />
-      <Toaster richColors position="top-right" />
     </AppShell>
   ),
 });

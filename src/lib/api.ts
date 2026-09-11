@@ -136,7 +136,7 @@ export function useSubmissions() {
 export function useCreateSubmission() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (input: { requirement_id: string; consultant_id: string; am_summary?: string }) => {
+    mutationFn: async (input: { requirement_id: string; consultant_id: string; am_summary?: string; status?: "submitted" | "in_review" | "interview_scheduled" | "rejected" | "placed" }) => {
       const { data: me } = await supabase.auth.getUser();
       const userId = me.user?.id;
       const { data: profile } = await supabase.from("profiles").select("workspace_id").eq("id", userId!).maybeSingle();
@@ -148,6 +148,50 @@ export function useCreateSubmission() {
         .single();
       if (error) throw error;
       return data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["submissions"] });
+      qc.invalidateQueries({ queryKey: ["requirements"] });
+    },
+  });
+}
+
+export function useUpdateSubmission() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      id,
+      patch,
+    }: {
+      id: string;
+      patch: {
+        status?: "submitted" | "in_review" | "interview_scheduled" | "rejected" | "placed";
+        am_summary?: string;
+        am_feedback?: string;
+      };
+    }) => {
+      const { data, error } = await supabase
+        .from("submissions")
+        .update({ ...patch, updated_at: new Date().toISOString() })
+        .eq("id", id)
+        .select()
+        .single();
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["submissions"] });
+      qc.invalidateQueries({ queryKey: ["requirements"] });
+    },
+  });
+}
+
+export function useDeleteSubmission() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from("submissions").delete().eq("id", id);
+      if (error) throw error;
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["submissions"] });
