@@ -6,10 +6,11 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { useRequirements, useCreateRequirement, useUpdateRequirement, useMarketRates } from "@/lib/api";
+import { useRequirements, useCreateRequirement, useUpdateRequirement, useMarketRates, useConsultants } from "@/lib/api";
 import { scoreRequirement, checkGhostJob } from "@/lib/scoring";
+import { matchRequirementToConsultants } from "@/lib/matching";
 import { toast } from "sonner";
-import { AlertTriangle, Plus, Search, Edit3, ArrowUpRight, FileText, Send } from "lucide-react";
+import { AlertTriangle, Plus, Search, Edit3, ArrowUpRight, FileText, Send, Users, Sparkles } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -199,6 +200,7 @@ function RequirementsPage() {
 function ReqDetail({ r, onClose }: { r: any; onClose: () => void }) {
   const navigate = useNavigate();
   const { data: marketRates = [] } = useMarketRates();
+  const { data: consultants = [] } = useConsultants();
   const [editOpen, setEditOpen] = useState(false);
 
   const { criteria, total } = scoreRequirement(
@@ -222,6 +224,11 @@ function ReqDetail({ r, onClose }: { r: any; onClose: () => void }) {
     am_phone: r.am_phone,
     posted_date: r.posted_date,
   });
+
+  const candidateMatches = useMemo(
+    () => matchRequirementToConsultants(r, consultants).slice(0, 3),
+    [r, consultants],
+  );
 
   return (
     <div className="space-y-5">
@@ -248,6 +255,73 @@ function ReqDetail({ r, onClose }: { r: any; onClose: () => void }) {
           Current Pipeline Status: <span className="capitalize font-semibold text-foreground">{r.status}</span>
         </div>
       </div>
+
+      {/* Top Matching Bench Candidates */}
+      {consultants.length > 0 && (
+        <div className="rounded-lg border border-border p-4 bg-muted/20 space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-xs font-bold uppercase tracking-wider text-foreground flex items-center gap-1.5">
+              <Users className="h-3.5 w-3.5 text-primary" /> Top Bench Matches
+            </h3>
+            <span className="text-[11px] text-muted-foreground font-mono">
+              {candidateMatches.length} candidates evaluated
+            </span>
+          </div>
+
+          <div className="space-y-2">
+            {candidateMatches.map((m) => (
+              <div
+                key={m.consultant.id}
+                className="flex items-center justify-between gap-2 rounded-lg border border-border bg-surface p-2.5 text-xs transition-colors hover:border-primary/40"
+              >
+                <div>
+                  <div className="font-semibold text-foreground flex items-center gap-2">
+                    <span>{m.consultant.full_name}</span>
+                    <span className="inline-flex items-center rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold text-emerald-600 border border-emerald-500/20">
+                      {m.matchPercentage}% match
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-muted-foreground mt-0.5">
+                    {m.consultant.years_experience}y exp · {m.matchedSkills.slice(0, 3).join(", ") || "Stack overlap"}
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-6 px-2 text-[10px]"
+                    onClick={() => {
+                      onClose();
+                      navigate({
+                        to: "/resume-tailor",
+                        search: { reqId: r.id, consultantId: m.consultant.id },
+                      });
+                    }}
+                    title="Tailor resume for this match"
+                  >
+                    <FileText className="mr-1 h-3 w-3" /> Tailor
+                  </Button>
+                  <Button
+                    size="sm"
+                    className="h-6 px-2 text-[10px]"
+                    onClick={() => {
+                      onClose();
+                      navigate({
+                        to: "/submit",
+                        search: { reqId: r.id, consultantId: m.consultant.id },
+                      });
+                    }}
+                    title="Submit this consultant"
+                  >
+                    <Send className="mr-1 h-3 w-3" /> Submit
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="rounded-lg border border-border p-4">
         <div className="flex items-center justify-between">
@@ -328,7 +402,10 @@ function ReqDetail({ r, onClose }: { r: any; onClose: () => void }) {
           className="flex-1"
           onClick={() => {
             onClose();
-            navigate({ to: "/resume-tailor" });
+            navigate({
+              to: "/resume-tailor",
+              search: { reqId: r.id },
+            });
           }}
         >
           <FileText className="mr-1.5 h-4 w-4" /> Tailor Resume

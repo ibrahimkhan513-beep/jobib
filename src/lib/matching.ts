@@ -97,6 +97,89 @@ export function matchConsultantToRequirements(
     .sort((a, b) => b.matchPercentage - a.matchPercentage);
 }
 
+export interface ConsultantMatch {
+  consultant: ConsultantRow;
+  matchPercentage: number;
+  matchedSkills: string[];
+  missingSkills: string[];
+  reasons: string[];
+}
+
+/**
+ * Compares a single requirement against all bench consultants,
+ * returning candidates sorted by best match percentage.
+ */
+export function matchRequirementToConsultants(
+  requirement: RequirementRow,
+  consultants: ConsultantRow[],
+): ConsultantMatch[] {
+  const reqSkills = (requirement.tech_stack ?? []).map((s: string) => s.trim());
+  const jdText = (requirement.jd_text ?? "").toLowerCase();
+
+  return consultants
+    .map((consultant) => {
+      const candidateSkills = (consultant.tech_stack ?? []).map((s: string) => s.trim());
+      const candidateNorm = new Set(candidateSkills.map(normalize));
+
+      const matchedSkills: string[] = [];
+      const missingSkills: string[] = [];
+
+      reqSkills.forEach((skill) => {
+        const norm = normalize(skill);
+        const inStack = candidateNorm.has(norm);
+        const inJd = jdText.includes(skill.toLowerCase());
+
+        if (inStack || inJd) {
+          matchedSkills.push(skill);
+        } else {
+          missingSkills.push(skill);
+        }
+      });
+
+      candidateSkills.forEach((skill) => {
+        if (!reqSkills.some((s) => normalize(s) === normalize(skill))) {
+          if (jdText.includes(skill.toLowerCase()) && !matchedSkills.includes(skill)) {
+            matchedSkills.push(skill);
+          }
+        }
+      });
+
+      const totalSkills = Math.max(reqSkills.length, 1);
+      const skillScore = Math.min(100, Math.round((matchedSkills.length / totalSkills) * 100));
+
+      let expBonus = 0;
+      const years = consultant.years_experience ?? 0;
+      if (years >= 7 && (requirement.title.toLowerCase().includes("senior") || requirement.title.toLowerCase().includes("lead"))) {
+        expBonus = 10;
+      } else if (years >= 4) {
+        expBonus = 5;
+      }
+
+      const statusBonus = consultant.bench_status === "available" ? 10 : 0;
+      const finalMatch = Math.min(99, Math.max(20, Math.round(skillScore * 0.75 + expBonus + statusBonus)));
+
+      const reasons: string[] = [];
+      if (matchedSkills.length > 0) {
+        reasons.push(`${matchedSkills.length} skills aligned: ${matchedSkills.slice(0, 3).join(", ")}`);
+      }
+      if (consultant.years_experience) {
+        reasons.push(`${consultant.years_experience} yrs experience`);
+      }
+      if (consultant.bench_status === "available") {
+        reasons.push("Immediately available");
+      }
+
+      return {
+        consultant,
+        matchPercentage: finalMatch,
+        matchedSkills,
+        missingSkills,
+        reasons,
+      };
+    })
+    .sort((a, b) => b.matchPercentage - a.matchPercentage);
+}
+
 /**
  * Dynamically crafts a high-converting Account Manager summary and email pitch
  * based on the selected Consultant and Requirement.
