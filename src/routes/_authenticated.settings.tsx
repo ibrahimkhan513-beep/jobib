@@ -5,8 +5,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { useMarketRates, useAddMarketRate, useDeleteMarketRate, useRequirements, useSubmissions } from "@/lib/api";
-import { Download, KeyRound, Plus, Trash2, CheckCircle2 } from "lucide-react";
+import { Download, KeyRound, Plus, Trash2, CheckCircle2, Sparkles, ExternalLink } from "lucide-react";
 import { useState } from "react";
+import { getStoredGroqKey, setStoredGroqKey, clearStoredGroqKey } from "@/lib/groq-client";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/_authenticated/settings")({
@@ -52,6 +53,27 @@ function SettingsPage() {
   const [newStack, setNewStack] = useState("");
   const [newMin, setNewMin] = useState("");
   const [newMax, setNewMax] = useState("");
+
+  const [groqKey, setGroqKey] = useState(getStoredGroqKey());
+  const [hasGroqKey, setHasGroqKey] = useState(Boolean(getStoredGroqKey()));
+
+  function handleSaveGroqKey() {
+    const trimmed = groqKey.trim();
+    if (!trimmed) {
+      toast.error("Please enter a valid Groq API key");
+      return;
+    }
+    setStoredGroqKey(trimmed);
+    setHasGroqKey(true);
+    toast.success("Groq API Key saved!");
+  }
+
+  function handleClearGroqKey() {
+    clearStoredGroqKey();
+    setGroqKey("");
+    setHasGroqKey(false);
+    toast.success("Groq API Key removed.");
+  }
 
   async function addStack() {
     if (!newStack.trim() || !newMin || !newMax) {
@@ -153,14 +175,54 @@ function SettingsPage() {
     <div>
       <PageHeader title="Settings" subtitle="Workspace, API keys, market rates, and exports." />
       <div className="grid gap-6 p-6 lg:grid-cols-2">
-        <Card title="AI provider (Groq)" desc="Powers JD analysis, resume tailoring, and ghost-job detection.">
-          <div className="rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
-            <KeyRound className="mb-1 h-4 w-4" />
-            For security, the Groq API key is stored securely in Supabase Secrets. Set it directly on the server with:
-            <pre className="mt-2 overflow-x-auto rounded bg-background p-2 text-[11px]">
-              supabase secrets set GROQ_API_KEY=your_key
-            </pre>
-            Optionally also set <code className="text-[11px]">GROQ_MODEL</code> (defaults to llama-3.3-70b-versatile).
+        <Card title="AI Provider (Groq LLaMA 3.3 70B)" desc="Powers deep contextual JD analysis, ATS resume tailoring, and ghost job detection.">
+          <div className="space-y-3 text-xs">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5">
+                <span className={`h-2 w-2 rounded-full ${hasGroqKey ? "bg-emerald-500" : "bg-amber-400"}`} />
+                <span className="font-medium text-foreground">
+                  {hasGroqKey ? "Browser API Key Active" : "No Browser Key Configured"}
+                </span>
+              </div>
+              <a
+                href="https://console.groq.com/keys"
+                target="_blank"
+                rel="noreferrer"
+                className="text-primary hover:underline font-medium inline-flex items-center gap-1 text-[11px]"
+              >
+                Get Free Groq Key <ExternalLink className="h-2.5 w-2.5" />
+              </a>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs text-muted-foreground">Groq API Key</Label>
+              <div className="flex gap-2">
+                <Input
+                  type="password"
+                  placeholder="gsk_..."
+                  value={groqKey}
+                  onChange={(e) => setGroqKey(e.target.value)}
+                  className="font-mono text-xs"
+                />
+                <Button size="sm" onClick={handleSaveGroqKey} className="text-xs">
+                  Save
+                </Button>
+                {hasGroqKey && (
+                  <Button variant="outline" size="sm" onClick={handleClearGroqKey} className="text-xs text-destructive hover:bg-destructive/10">
+                    Remove
+                  </Button>
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-md border border-border bg-muted/20 p-2.5 text-[11px] text-muted-foreground space-y-1">
+              <p>
+                <strong>Zero cost:</strong> Groq offers generous free daily requests. Setting this key enables the <strong>✨ Groq AI Deep Tailor</strong> button on the Resume Tailor page.
+              </p>
+              <p>
+                Server-side fallback: <code className="bg-muted px-1 py-0.5 rounded text-[10px]">supabase secrets set GROQ_API_KEY=your_key</code>
+              </p>
+            </div>
           </div>
         </Card>
 

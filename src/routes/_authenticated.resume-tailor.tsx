@@ -1,16 +1,24 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { PageHeader } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
+} from "@/components/ui/dialog";
+import {
   AlertTriangle, Sparkles, CheckCircle2, Loader2, Copy, Check, Printer, FileText, Send, ArrowUpRight,
+  Zap, Key, ExternalLink,
 } from "lucide-react";
 import { useState, useEffect } from "react";
-import { useConsultants, useRequirements, useAnalyzeJD, type JDAnalysisResult } from "@/lib/api";
+import { useConsultants, useRequirements, type JDAnalysisResult } from "@/lib/api";
 import { analyzeJDLocally, buildTailoredResumeDocument } from "@/lib/resume-engine";
+import {
+  callGroqAI, getStoredGroqKey, setStoredGroqKey, clearStoredGroqKey,
+} from "@/lib/groq-client";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/_authenticated/resume-tailor")({
@@ -35,15 +43,27 @@ function ResumeTailorPage() {
 
   const { data: consultants = [] } = useConsultants();
   const { data: requirements = [] } = useRequirements();
-  const analyze = useAnalyzeJD();
-
   const [jd, setJd] = useState("");
   const [selectedReqId, setSelectedReqId] = useState<string>(search.reqId ?? "");
   const [consultantId, setConsultantId] = useState<string>(search.consultantId ?? "none");
   const [result, setResult] = useState<JDAnalysisResult | null>(null);
+  const [engineUsed, setEngineUsed] = useState<"nlp" | "groq" | null>(null);
   const [activeTab, setActiveTab] = useState("analysis");
   const [copiedResume, setCopiedResume] = useState(false);
   const [copiedBullets, setCopiedBullets] = useState(false);
+
+  // Engine loading states
+  const [isNlpLoading, setIsNlpLoading] = useState(false);
+  const [isGroqLoading, setIsGroqLoading] = useState(false);
+
+  // Groq API Key modal & state
+  const [hasGroqKey, setHasGroqKey] = useState(false);
+  const [groqKeyOpen, setGroqKeyOpen] = useState(false);
+  const [groqKeyInput, setGroqKeyInput] = useState("");
+
+  useEffect(() => {
+    setHasGroqKey(Boolean(getStoredGroqKey()));
+  }, []);
 
   // Pre-fill from query params or requirement selection
   useEffect(() => {
@@ -73,16 +93,44 @@ function ResumeTailorPage() {
 
   const selectedConsultant = consultants.find((c: any) => c.id === consultantId) || null;
 
-  async function runAnalysis() {
+  // --- Engine 1: Fast Built-in NLP (Offline, Deterministic, 0s) ---
+  function handleRunNlp() {
+    if (!jd.trim()) {
+      toast.error("Please paste or load a Job Description first");
+      return;
+    }
+    setIsNlpLoading(true);
+    try {
+      const localResult = analyzeJDLocally(jd, selectedConsultant);
+      setResult(localResult);
+      setEngineUsed("nlp");
+      toast.success("Tailored with Fast Built-in NLP Engine!");
+    } catch (err) {
+      console.error("Local NLP analysis error:", err);
+      toast.error("Error analyzing JD with local NLP engine.");
+    } finally {
+      setIsNlpLoading(false);
+    }
+  }
+
+  // --- Engine 2: Groq AI Deep Tailor (LLaMA 3.3 70B) ---
+  async function handleRunGroq(overrideKey?: string) {
     if (!jd.trim()) {
       toast.error("Please paste or load a Job Description first");
       return;
     }
 
+    const key = (overrideKey || getStoredGroqKey()).trim();
+    if (!key) {
+      setGroqKeyInput("");
+      setGroqKeyOpen(true);
+      return;
+    }
+
+    setIsGroqLoading(true);
     try {
-      // Try edge function (Groq) first
-      const data = await analyze.mutateAsync({
-        jd_text: jd,
+      const aiResult = await callGroqAI({
+        jdText: jd,
         consultant: selectedConsultant
           ? {
               full_name: selectedConsultant.full_name,
@@ -92,22 +140,44 @@ function ResumeTailorPage() {
               last_client_type: selectedConsultant.last_client_type,
               last_project_duration: selectedConsultant.last_project_duration,
             }
-          : undefined,
+          : null,
+        apiKey: key,
       });
-      setResult(data);
-      toast.success("AI analysis completed successfully!");
-    } catch (edgeErr) {
-      console.log("Edge function unavailable or no GROQ_API_KEY, switching to local NLP engine:", edgeErr);
-      try {
-        // Seamless intelligent local fallback
-        const localResult = analyzeJDLocally(jd, selectedConsultant);
-        setResult(localResult);
-        toast.success("Analyzed & tailored using built-in NLP engine!");
-      } catch (localErr) {
-        console.error("Local NLP analysis error:", localErr);
-        toast.error("Error analyzing JD. Please check console.");
+      setResult(aiResult);
+      setEngineUsed("groq");
+      toast.success("Tailored with Groq AI (LLaMA 3.3 70B)!");
+    } catch (err: any) {
+      console.error("Groq AI analysis error:", err);
+      if (err.message === "GROQ_API_KEY_REQUIRED" || err.message?.includes("Invalid Groq API Key")) {
+        toast.error("Groq API key required or invalid. Please configure your key.");
+        setGroqKeyOpen(true);
+      } else {
+        toast.error(err.message || "Failed to generate with Groq AI.");
       }
+    } finally {
+      setIsGroqLoading(false);
     }
+  }
+
+  function handleSaveKeyAndRun() {
+    const key = groqKeyInput.trim();
+    if (!key) {
+      toast.error("Please paste a valid Groq API Key");
+      return;
+    }
+    setStoredGroqKey(key);
+    setHasGroqKey(true);
+    setGroqKeyOpen(false);
+    toast.success("Groq API Key saved successfully!");
+    handleRunGroq(key);
+  }
+
+  function handleRemoveKey() {
+    clearStoredGroqKey();
+    setHasGroqKey(false);
+    setGroqKeyInput("");
+    setGroqKeyOpen(false);
+    toast.success("Groq API Key removed.");
   }
 
   const fullResumeText = selectedConsultant && result
@@ -225,21 +295,64 @@ function ResumeTailorPage() {
               </Select>
             </div>
 
-            <Button
-              className="w-full"
-              onClick={runAnalysis}
-              disabled={!jd.trim() || analyze.isPending}
-            >
-              {analyze.isPending ? (
-                <>
-                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> Analyzing…
-                </>
-              ) : (
-                <>
-                  <Sparkles className="mr-1.5 h-4 w-4" /> Analyze & Tailor Resume
-                </>
-              )}
-            </Button>
+            {/* Dual Actions: NLP vs Groq AI */}
+            <div className="space-y-2 pt-2 border-t border-border">
+              <Button
+                variant="outline"
+                className="w-full justify-between h-10 px-3.5 border-border hover:bg-muted font-medium"
+                onClick={handleRunNlp}
+                disabled={!jd.trim() || isNlpLoading || isGroqLoading}
+              >
+                <div className="flex items-center gap-2">
+                  {isNlpLoading ? (
+                    <Loader2 className="h-4 w-4 animate-spin text-amber-500" />
+                  ) : (
+                    <Zap className="h-4 w-4 text-amber-500" />
+                  )}
+                  <span className="text-xs font-semibold">⚡ Fast NLP Tailor</span>
+                </div>
+                <span className="text-[10px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded border border-border">
+                  Instant · Offline
+                </span>
+              </Button>
+
+              <Button
+                className="w-full justify-between h-10 px-3.5 bg-gradient-to-r from-purple-600 via-indigo-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white shadow-sm border-0"
+                onClick={() => handleRunGroq()}
+                disabled={!jd.trim() || isNlpLoading || isGroqLoading}
+              >
+                <div className="flex items-center gap-2">
+                  {isGroqLoading ? (
+                    <Loader2 className="h-4 w-4 animate-spin text-white" />
+                  ) : (
+                    <Sparkles className="h-4 w-4 text-purple-200" />
+                  )}
+                  <span className="text-xs font-semibold">✨ Groq AI Deep Tailor</span>
+                </div>
+                <span className="text-[10px] bg-white/20 text-white px-1.5 py-0.5 rounded font-mono font-medium">
+                  LLaMA 3.3 70B
+                </span>
+              </Button>
+
+              {/* API Key status & quick config */}
+              <div className="flex items-center justify-between px-1 pt-1 text-[11px] text-muted-foreground">
+                <div className="flex items-center gap-1.5">
+                  <span className={`h-2 w-2 rounded-full ${hasGroqKey ? "bg-emerald-500" : "bg-amber-400"}`} />
+                  <span>{hasGroqKey ? "Groq API key saved" : "Groq API key: optional (Free)"}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setGroqKeyInput(getStoredGroqKey());
+                    setGroqKeyOpen(true);
+                  }}
+                  className="text-primary hover:underline flex items-center gap-1 font-medium"
+                >
+                  <Key className="h-3 w-3" />
+                  {hasGroqKey ? "Change Key" : "Add Key"}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -269,14 +382,35 @@ function ResumeTailorPage() {
               )}
             </div>
 
+            {/* Active Engine Indicator Badge */}
+            {result && engineUsed && (
+              <div className="flex items-center justify-between py-1.5 px-3 rounded-lg border text-xs bg-muted/40 mb-3">
+                <div className="flex items-center gap-2">
+                  <span className="text-muted-foreground text-[11px]">Active Engine:</span>
+                  {engineUsed === "groq" ? (
+                    <span className="inline-flex items-center gap-1 font-semibold text-purple-700 dark:text-purple-300 bg-purple-500/10 px-2.5 py-0.5 rounded-full border border-purple-300 dark:border-purple-800 text-[11px]">
+                      <Sparkles className="h-3 w-3 text-purple-600" /> Groq AI (LLaMA 3.3 70B)
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 font-semibold text-amber-700 dark:text-amber-300 bg-amber-500/10 px-2.5 py-0.5 rounded-full border border-amber-300 dark:border-amber-800 text-[11px]">
+                      <Zap className="h-3 w-3 text-amber-600" /> Fast Built-in NLP Engine
+                    </span>
+                  )}
+                </div>
+                <span className="text-[11px] text-muted-foreground hidden sm:inline">
+                  {engineUsed === "groq" ? "Bespoke LLM contextual synthesis" : "Rule-based instant extraction"}
+                </span>
+              </div>
+            )}
+
             {/* Tab 1: Skills & Bullets */}
             <TabsContent value="analysis" className="space-y-4 mt-0">
               {/* JD Analysis Card */}
               <div className="rounded-xl border border-border bg-surface p-5 shadow-sm">
                 <h2 className="text-sm font-semibold text-foreground">JD Intelligence & Extracted Skills</h2>
                 {!result ? (
-                  <p className="mt-3 text-xs text-muted-foreground">
-                    Paste a JD on the left and click <strong>Analyze & Tailor</strong> to extract required skills, domain, and pain points.
+                  <p className="mt-3 text-xs text-muted-foreground leading-relaxed">
+                    Paste or load a JD on the left, then click <strong>⚡ Fast NLP Tailor</strong> (instant offline) or <strong>✨ Groq AI Deep Tailor</strong> (bespoke LLaMA 3.3) to synthesize tailored resume bullets.
                   </p>
                 ) : (
                   <div className="mt-3 space-y-3 text-sm">
@@ -448,6 +582,84 @@ function ResumeTailorPage() {
           </Tabs>
         </div>
       </div>
+
+      {/* Groq Key Modal */}
+      <Dialog open={groqKeyOpen} onOpenChange={setGroqKeyOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Sparkles className="h-5 w-5 text-purple-600" />
+              Connect Free Groq API Key
+            </DialogTitle>
+            <DialogDescription className="text-xs">
+              Jobib uses Groq's ultra-fast <strong>LLaMA 3.3 70B</strong> model for bespoke contextual resume bullets and deep JD insights.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3 py-2">
+            <div className="rounded-lg border border-purple-200 bg-purple-50/50 dark:bg-purple-950/20 p-3 text-xs text-muted-foreground space-y-1.5">
+              <div className="font-semibold text-purple-900 dark:text-purple-200">How to get your free key (30 seconds):</div>
+              <ol className="list-decimal pl-4 space-y-1 text-[11px]">
+                <li>
+                  Open{" "}
+                  <a
+                    href="https://console.groq.com/keys"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-primary underline font-medium inline-flex items-center gap-0.5"
+                  >
+                    console.groq.com/keys <ExternalLink className="h-2.5 w-2.5" />
+                  </a>{" "}
+                  (Sign in with Google / GitHub).
+                </li>
+                <li>Click <strong>"Create API Key"</strong> and copy it.</li>
+                <li>Paste it below. It's completely free with generous daily rate limits.</li>
+              </ol>
+            </div>
+
+            <div className="space-y-1">
+              <Label className="text-xs font-medium">Groq API Key (starts with gsk_)</Label>
+              <Input
+                type="password"
+                placeholder="gsk_..."
+                value={groqKeyInput}
+                onChange={(e) => setGroqKeyInput(e.target.value)}
+                className="text-xs font-mono"
+              />
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between gap-2 pt-2">
+            {hasGroqKey ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="text-xs text-destructive hover:bg-destructive/10"
+                onClick={handleRemoveKey}
+              >
+                Remove Key
+              </Button>
+            ) : (
+              <div />
+            )}
+            <div className="flex items-center gap-2">
+              <Button type="button" variant="outline" size="sm" onClick={() => setGroqKeyOpen(false)} className="text-xs">
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                onClick={handleSaveKeyAndRun}
+                disabled={!groqKeyInput.trim()}
+                className="text-xs bg-purple-600 hover:bg-purple-700 text-white"
+              >
+                Save & Tailor with AI
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
