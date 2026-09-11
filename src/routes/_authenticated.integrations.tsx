@@ -6,13 +6,18 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
-  Dices, FileSpreadsheet, Mail, Plug, RefreshCw, CheckCircle2, XCircle, Clock, ExternalLink, Loader2,
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogTrigger,
+} from "@/components/ui/dialog";
+import {
+  Dices, FileSpreadsheet, Mail, Plug, RefreshCw, CheckCircle2, XCircle, Clock,
+  ExternalLink, Loader2, Copy, Check, Code, HelpCircle, Send, Sparkles,
 } from "lucide-react";
 import { toast } from "sonner";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   useIntegrationConfigs, useUpsertIntegrationConfig, useSyncLogs,
   useStartGoogleOAuth, useCreateSheet, useRunSheetsSync, useRunDiceScrape, useRunGmailParse,
+  useRequirements,
 } from "@/lib/api";
 
 export const Route = createFileRoute("/_authenticated/integrations")({
@@ -71,26 +76,134 @@ function IntegrationCardShell({
 
 function SheetsCard() {
   const { data: configs = [] } = useIntegrationConfigs();
+  const { data: requirements = [] } = useRequirements();
   const config = configs.find((c: any) => c.integration_type === "google_sheets");
-  const isConnected = Boolean(config?.enabled && (config?.config as any)?.refresh_token);
-  const sheetId = (config?.config as any)?.sheet_id;
-  const email = (config?.config as any)?.email;
+  const cfg = (config?.config ?? {}) as Record<string, any>;
+
+  const [sheetUrl, setSheetUrl] = useState<string>(cfg.sheet_url || (cfg.sheet_id ? `https://docs.google.com/spreadsheets/d/${cfg.sheet_id}` : ""));
+  const [webhookUrl, setWebhookUrl] = useState<string>(cfg.webhook_url || "");
+  const [autoNew, setAutoNew] = useState<boolean>(cfg.auto_new ?? true);
+  const [autoStatus, setAutoStatus] = useState<boolean>(cfg.auto_status ?? true);
+  const [isPushing, setIsPushing] = useState<boolean>(false);
+  const [copiedScript, setCopiedScript] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (cfg.sheet_url) setSheetUrl(cfg.sheet_url);
+    if (cfg.webhook_url) setWebhookUrl(cfg.webhook_url);
+  }, [config]);
+
+  const isOAuthConnected = Boolean(config?.enabled && cfg.refresh_token);
+  const isWebhookConnected = Boolean(webhookUrl.trim());
+  const isConnected = isOAuthConnected || isWebhookConnected || Boolean(sheetUrl.trim());
 
   const startOAuth = useStartGoogleOAuth();
   const createSheet = useCreateSheet();
   const runSync = useRunSheetsSync();
   const upsert = useUpsertIntegrationConfig();
 
-  const [autoNew, setAutoNew] = useState(true);
-  const [autoStatus, setAutoStatus] = useState(true);
+  const scriptCode = `function doPost(e) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getActiveSheet();
+    var payload = JSON.parse(e.postData.contents);
+    var reqs = payload.requirements || [];
 
-  const cols = [
-    ["Job Title", "A"], ["Client/Vendor", "B"], ["Tech Stack", "C"], ["Location", "D"],
-    ["Rate", "E"], ["Source Type", "F"], ["Req-Score", "G"], ["AM Contact", "H"],
-    ["Posted Date", "I"], ["Status", "J"], ["Origin Channel", "K"],
-  ];
+    // Initialize header row if sheet is empty
+    if (sheet.getLastRow() === 0) {
+      sheet.appendRow([
+        "Job Title", "Client / Vendor", "Tech Stack", "Location",
+        "Rate", "Req-Score", "Source Type", "Status", "Posted Date", "AM Contact"
+      ]);
+      sheet.getRange(1, 1, 1, 10).setFontWeight("bold").setBackground("#f3f4f6");
+    }
 
-  async function connect() {
+    for (var i = 0; i < reqs.length; i++) {
+      var r = reqs[i];
+      sheet.appendRow([
+        r.title || "",
+        r.client || "",
+        r.stack || "",
+        r.location || "",
+        r.rate || "",
+        r.score || "",
+        r.source || "",
+        r.status || "",
+        r.date || "",
+        r.contact || ""
+      ]);
+    }
+
+    return ContentService
+      .createTextOutput(JSON.stringify({ status: "success", count: reqs.length }))
+      .setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService
+      .createTextOutput(JSON.stringify({ status: "error", message: err.toString() }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+}`;
+
+  async function handleSaveConfig() {
+    try {
+      await upsert.mutateAsync({
+        integration_type: "google_sheets",
+        enabled: isConnected,
+        config: {
+          ...cfg,
+          sheet_url: sheetUrl.trim(),
+          webhook_url: webhookUrl.trim(),
+          auto_new: autoNew,
+          auto_status: autoStatus,
+        },
+      });
+      toast.success("Google Sheets configuration saved!");
+    } catch (e: any) {
+      toast.error(e.message || "Failed to save configuration");
+    }
+  }
+
+  async function handleRunSync() {
+    setIsPushing(true);
+    try {
+      if (webhookUrl.trim()) {
+        const payload = {
+          action: "sync_requirements",
+          requirements: requirements.map((r: any) => ({
+            title: r.title,
+            client: r.client_masked || r.vendor_name || "Direct Client",
+            stack: (r.tech_stack ?? []).join(", "),
+            location: [r.location_city, r.location_state].filter(Boolean).join(", "),
+            rate: r.rate_max ? `$${r.rate_min ? `${r.rate_min}-$` : ""}${r.rate_max}/hr` : "",
+            score: r.req_score,
+            source: r.source_type,
+            status: r.status,
+            date: r.posted_date,
+            contact: [r.am_name, r.am_phone, r.am_email].filter(Boolean).join(" / "),
+          })),
+        };
+
+        // Post to Google Apps Script Webhook (no-cors prevents redirect blocker)
+        await fetch(webhookUrl.trim(), {
+          method: "POST",
+          mode: "no-cors",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+
+        await runSync.mutateAsync();
+        toast.success(`Successfully pushed ${requirements.length} requirements to your Google Sheet!`);
+      } else {
+        const res = await runSync.mutateAsync();
+        toast.success(`Synced ${res.appended || requirements.length} requirements!`);
+      }
+    } catch (e: any) {
+      toast.error(e.message || "Sync failed");
+    } finally {
+      setIsPushing(false);
+    }
+  }
+
+  async function handleConnectOAuth() {
     try {
       const url = await startOAuth.mutateAsync();
       window.open(url, "_blank", "width=500,height=650");
@@ -99,80 +212,196 @@ function SheetsCard() {
     }
   }
 
-  async function handleCreateSheet() {
-    try {
-      const result = await createSheet.mutateAsync();
-      toast.success("New sheet created");
-      window.open(result.url, "_blank");
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Failed to create sheet — connect Google first");
-    }
-  }
-
-  async function handleRun() {
-    try {
-      const result = await runSync.mutateAsync();
-      toast.success(`Synced — ${result.appended} added, ${result.updated} updated`);
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Sync failed");
-    }
-  }
+  const cols = [
+    ["Job Title", "A"], ["Client/Vendor", "B"], ["Tech Stack", "C"], ["Location", "D"],
+    ["Rate", "E"], ["Source Type", "F"], ["Req-Score", "G"], ["AM Contact", "H"],
+    ["Posted Date", "I"], ["Status", "J"],
+  ];
 
   return (
     <IntegrationCardShell
-      Icon={FileSpreadsheet} title="Google Sheets auto-sync"
-      subtitle="Every requirement automatically rolls to your sheet."
-      connected={isConnected} status={isConnected ? "ok" : "unknown"} onRun={handleRun} running={runSync.isPending}
+      Icon={FileSpreadsheet}
+      title="Google Sheets Live Sync"
+      subtitle="Every requirement automatically rolls to your Google Sheet in real time."
+      connected={isConnected}
+      status={isConnected ? "ok" : "unknown"}
+      onRun={handleRunSync}
+      running={isPushing || runSync.isPending}
     >
-      <div className="grid gap-5 lg:grid-cols-2">
+      <div className="grid gap-6 lg:grid-cols-2">
         <div className="space-y-4">
-          {isConnected ? (
-            <Button variant="outline" className="w-full justify-between" disabled>
-              <span>Connected as {email || "Google account"}</span><CheckCircle2 className="h-4 w-4 text-sync-ok" />
-            </Button>
-          ) : (
-            <Button className="w-full" onClick={connect} disabled={startOAuth.isPending}>
-              {startOAuth.isPending ? "Opening Google…" : "Connect Google account"}
-            </Button>
-          )}
+          {/* Method Selection Header */}
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              Connection Settings
+            </span>
+            <Dialog>
+              <DialogTrigger asChild>
+                <Button variant="ghost" size="sm" className="h-7 text-xs text-primary hover:text-primary">
+                  <HelpCircle className="mr-1 h-3.5 w-3.5" /> 1-Min Setup Guide
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="max-w-xl">
+                <DialogHeader>
+                  <DialogTitle className="flex items-center gap-2">
+                    <FileSpreadsheet className="h-5 w-5 text-emerald-500" />
+                    How to Connect Any Google Sheet in 1 Minute
+                  </DialogTitle>
+                  <DialogDescription>
+                    No Google Cloud Console or billing required. Works on any Google account.
+                  </DialogDescription>
+                </DialogHeader>
+
+                <div className="space-y-3 py-2 text-xs">
+                  <ol className="list-decimal space-y-2 pl-4 text-foreground">
+                    <li>Open your Google Sheet (or create a new blank Google Sheet).</li>
+                    <li>In the menu bar, click <strong>Extensions ➔ Apps Script</strong>.</li>
+                    <li>Replace all code in the editor with the script below and click <strong>Save (Ctrl+S)</strong>.</li>
+                    <li>Click the blue <strong>Deploy ➔ New deployment</strong> button (top right).</li>
+                    <li>Select type: <strong>Web app</strong>. Under <em>"Who has access"</em>, choose <strong>"Anyone"</strong>.</li>
+                    <li>Click <strong>Deploy</strong>, copy the <strong>Web app URL</strong>, and paste it into the Webhook URL field in Jobib!</li>
+                  </ol>
+
+                  <div className="mt-3">
+                    <div className="flex items-center justify-between mb-1 font-semibold">
+                      <span>Apps Script Code:</span>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-6 px-2 text-[11px]"
+                        onClick={() => {
+                          navigator.clipboard.writeText(scriptCode);
+                          setCopiedScript(true);
+                          toast.success("Apps script copied to clipboard!");
+                          setTimeout(() => setCopiedScript(false), 2000);
+                        }}
+                      >
+                        {copiedScript ? <Check className="mr-1 h-3 w-3 text-emerald-500" /> : <Copy className="mr-1 h-3 w-3" />}
+                        {copiedScript ? "Copied!" : "Copy Script"}
+                      </Button>
+                    </div>
+                    <pre className="max-h-48 overflow-auto rounded bg-muted p-3 text-[11px] font-mono leading-relaxed text-muted-foreground">
+                      {scriptCode}
+                    </pre>
+                  </div>
+                </div>
+              </DialogContent>
+            </Dialog>
+          </div>
+
+          {/* Google Sheet URL */}
           <div>
-            <Label>Sheet</Label>
+            <Label className="text-xs font-medium">Google Sheet Link / URL</Label>
             <div className="mt-1 flex gap-2">
-              <Input value={sheetId ? `https://docs.google.com/spreadsheets/d/${sheetId}` : ""} placeholder="No sheet linked yet" readOnly />
-              <Button variant="outline" onClick={handleCreateSheet} disabled={!isConnected || createSheet.isPending}>
-                {createSheet.isPending ? "Creating…" : "Create new"}
-              </Button>
+              <Input
+                value={sheetUrl}
+                onChange={(e) => setSheetUrl(e.target.value)}
+                placeholder="https://docs.google.com/spreadsheets/d/your-sheet-id/edit"
+                className="text-xs"
+              />
+              {sheetUrl && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => window.open(sheetUrl.startsWith("http") ? sheetUrl : `https://docs.google.com/spreadsheets/d/${sheetUrl}`, "_blank")}
+                  title="Open sheet in new tab"
+                >
+                  <ExternalLink className="h-3.5 w-3.5" />
+                </Button>
+              )}
             </div>
           </div>
-          <div className="flex items-center justify-between rounded-md border border-border px-3 py-2">
-            <Label htmlFor="autoNew" className="text-sm">Auto-sync on new requirement</Label>
-            <Switch
-              id="autoNew" checked={autoNew}
-              onCheckedChange={(v) => { setAutoNew(v); upsert.mutate({ integration_type: "google_sheets", enabled: isConnected, config: { ...((config?.config ?? {}) as Record<string, unknown>), auto_new: v } }); }}
+
+          {/* Webhook Sync URL (Instant Apps Script) */}
+          <div>
+            <div className="flex items-center justify-between">
+              <Label className="text-xs font-medium">Google Apps Script Webhook URL (Recommended)</Label>
+              <span className="text-[10px] text-emerald-600 bg-emerald-500/10 px-1.5 py-0.5 rounded font-medium">
+                Instant / No OAuth
+              </span>
+            </div>
+            <Input
+              value={webhookUrl}
+              onChange={(e) => setWebhookUrl(e.target.value)}
+              placeholder="https://script.google.com/macros/s/.../exec"
+              className="mt-1 text-xs font-mono"
             />
           </div>
-          <div className="flex items-center justify-between rounded-md border border-border px-3 py-2">
-            <Label htmlFor="autoStatus" className="text-sm">Auto-sync on status update</Label>
-            <Switch
-              id="autoStatus" checked={autoStatus}
-              onCheckedChange={(v) => { setAutoStatus(v); upsert.mutate({ integration_type: "google_sheets", enabled: isConnected, config: { ...((config?.config ?? {}) as Record<string, unknown>), auto_status: v } }); }}
-            />
+
+          {/* Action buttons */}
+          <div className="flex items-center gap-2 pt-1">
+            <Button size="sm" onClick={handleSaveConfig} disabled={upsert.isPending} className="flex-1">
+              Save Configuration
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={handleRunSync}
+              disabled={isPushing || (!webhookUrl && !sheetUrl)}
+              className="flex-1"
+            >
+              {isPushing ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Send className="mr-1.5 h-3.5 w-3.5 text-primary" />}
+              Push Reqs to Sheet Now
+            </Button>
           </div>
-          {!isConnected && (
-            <p className="text-xs text-muted-foreground">
-              Connect Google first, then create or link a sheet. Auto-sync requires the database trigger from this sprint's migration to be active — see Settings for setup notes.
-            </p>
-          )}
+
+          {/* Auto-sync toggles */}
+          <div className="space-y-2 pt-2 border-t border-border">
+            <div className="flex items-center justify-between rounded-md border border-border px-3 py-2">
+              <Label htmlFor="autoNew" className="text-xs">Auto-sync when new requirement is added</Label>
+              <Switch
+                id="autoNew"
+                checked={autoNew}
+                onCheckedChange={(v) => {
+                  setAutoNew(v);
+                  upsert.mutate({
+                    integration_type: "google_sheets",
+                    enabled: isConnected,
+                    config: { ...cfg, sheet_url: sheetUrl, webhook_url: webhookUrl, auto_new: v },
+                  });
+                }}
+              />
+            </div>
+            <div className="flex items-center justify-between rounded-md border border-border px-3 py-2">
+              <Label htmlFor="autoStatus" className="text-xs">Auto-sync on requirement status change</Label>
+              <Switch
+                id="autoStatus"
+                checked={autoStatus}
+                onCheckedChange={(v) => {
+                  setAutoStatus(v);
+                  upsert.mutate({
+                    integration_type: "google_sheets",
+                    enabled: isConnected,
+                    config: { ...cfg, sheet_url: sheetUrl, webhook_url: webhookUrl, auto_status: v },
+                  });
+                }}
+              />
+            </div>
+          </div>
         </div>
-        <div>
-          <div className="mb-2 text-sm font-medium">Column mapping</div>
-          <div className="overflow-hidden rounded-md border border-border text-sm">
+
+        {/* Column Mapping and Status */}
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="text-sm font-medium">Automatic Column Mapping</div>
+            <span className="text-xs text-muted-foreground">10 Columns</span>
+          </div>
+          <div className="overflow-hidden rounded-md border border-border text-xs">
             {cols.map(([field, col]) => (
               <div key={field} className="flex items-center justify-between border-b border-border px-3 py-1.5 last:border-b-0">
-                <span>{field}</span>
-                <span className="rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">Col {col}</span>
+                <span className="font-medium text-foreground">{field}</span>
+                <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] font-mono text-muted-foreground">Col {col}</span>
               </div>
             ))}
+          </div>
+
+          <div className="rounded-lg border border-border bg-muted/20 p-3 text-xs text-muted-foreground space-y-1">
+            <div className="font-medium text-foreground flex items-center gap-1.5">
+              <Sparkles className="h-3.5 w-3.5 text-primary" /> Live Sync Tips:
+            </div>
+            <p>
+              When synced, each requirement will be appended as a new row with its Job Title, Tech Stack, Pay Rate, Req-Score, and Account Manager contact details.
+            </p>
           </div>
         </div>
       </div>
