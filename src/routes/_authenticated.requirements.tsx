@@ -10,11 +10,12 @@ import { useRequirements, useCreateRequirement, useUpdateRequirement, useMarketR
 import { scoreRequirement, checkGhostJob } from "@/lib/scoring";
 import { matchRequirementToConsultants } from "@/lib/matching";
 import { toast } from "sonner";
-import { AlertTriangle, Plus, Search, Edit3, ArrowUpRight, FileText, Send, Users, Sparkles } from "lucide-react";
+import { AlertTriangle, Plus, Search, Edit3, ArrowUpRight, FileText, Send, Users, Sparkles, Globe, Loader2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
+import { VendorPortalScraperModal } from "@/components/vendor-portal-scraper-modal";
 
 export const Route = createFileRoute("/_authenticated/requirements")({
   head: () => ({
@@ -32,6 +33,7 @@ function RequirementsPage() {
   const [scoreBand, setScoreBand] = useState<string>("all");
   const [openId, setOpenId] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
+  const [scraperOpen, setScraperOpen] = useState(false);
   const { data: seed = [], isLoading } = useRequirements();
 
   const filtered = useMemo(() => {
@@ -59,14 +61,24 @@ function RequirementsPage() {
         title="Requirements Pipeline"
         subtitle={`${filtered.length} of ${seed.length} requirements`}
         actions={
-          <Dialog open={addOpen} onOpenChange={setAddOpen}>
-            <DialogTrigger asChild>
-              <Button size="sm">
-                <Plus className="mr-1.5 h-4 w-4" /> Add requirement
-              </Button>
-            </DialogTrigger>
-            <AddRequirementModal onDone={() => setAddOpen(false)} />
-          </Dialog>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              onClick={() => setScraperOpen(true)}
+              className="gap-1.5 font-semibold bg-primary hover:bg-primary/90 text-primary-foreground shadow-sm"
+            >
+              <Sparkles className="h-4 w-4 text-amber-300" />
+              Scrape Vendor Portals
+            </Button>
+            <Dialog open={addOpen} onOpenChange={setAddOpen}>
+              <DialogTrigger asChild>
+                <Button size="sm" variant="outline">
+                  <Plus className="mr-1.5 h-4 w-4" /> Add requirement
+                </Button>
+              </DialogTrigger>
+              <AddRequirementModal onDone={() => setAddOpen(false)} />
+            </Dialog>
+          </div>
         }
       />
       <div className="space-y-4 p-6">
@@ -173,12 +185,43 @@ function RequirementsPage() {
                 ))}
                 {filtered.length === 0 && (
                   <tr>
-                    <td colSpan={11} className="px-4 py-12 text-center text-sm text-muted-foreground">
-                      {isLoading
-                        ? "Loading requirements…"
-                        : seed.length === 0
-                        ? "No requirements yet. Add one or seed demo data from the Dashboard."
-                        : "No requirements match your search filters."}
+                    <td colSpan={11} className="px-4 py-16 text-center">
+                      {isLoading ? (
+                        <div className="flex flex-col items-center justify-center gap-2 text-sm text-muted-foreground">
+                          <Loader2 className="h-6 w-6 animate-spin text-primary" />
+                          <span>Loading requirements pipeline...</span>
+                        </div>
+                      ) : seed.length === 0 ? (
+                        <div className="max-w-md mx-auto space-y-4">
+                          <div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-primary/10 text-primary border border-primary/20">
+                            <Globe className="h-7 w-7 animate-pulse" />
+                          </div>
+                          <div>
+                            <h3 className="text-base font-bold text-foreground">No Requirements in Pipeline Yet</h3>
+                            <p className="text-xs text-muted-foreground mt-1">
+                              Scrape live C2C & W2 requirements directly from 1,000+ US IT staffing portals (Apex Systems, Aerotek, Beacon Hill, Collabera, Bullhorn ATS, JobDiva) or add one manually.
+                            </p>
+                          </div>
+                          <div className="flex items-center justify-center gap-3 pt-2">
+                            <Button
+                              size="sm"
+                              onClick={() => setScraperOpen(true)}
+                              className="gap-1.5 font-semibold bg-primary hover:bg-primary/90 text-primary-foreground shadow-sm"
+                            >
+                              <Sparkles className="h-3.5 w-3.5 text-amber-300" />
+                              Scrape Vendor Portals
+                            </Button>
+                            <Button size="sm" variant="outline" onClick={() => setAddOpen(true)}>
+                              <Plus className="mr-1.5 h-3.5 w-3.5" />
+                              Add Manually
+                            </Button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="text-sm text-muted-foreground">
+                          No requirements match your search filters.
+                        </div>
+                      )}
                     </td>
                   </tr>
                 )}
@@ -193,6 +236,8 @@ function RequirementsPage() {
           {open && <ReqDetail r={open} onClose={() => setOpenId(null)} />}
         </SheetContent>
       </Sheet>
+
+      <VendorPortalScraperModal open={scraperOpen} onOpenChange={setScraperOpen} />
     </div>
   );
 }

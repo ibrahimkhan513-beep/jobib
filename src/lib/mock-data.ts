@@ -124,21 +124,21 @@ const LOCS = [
 ];
 
 const VENDORS = [
-  "TCS",
-  "Infosys",
-  "Cognizant",
-  "Collabera",
-  "Wipro",
-  "HCL",
-  "Capgemini",
-  "Mindtree",
-  "LTI",
-  "Mphasis",
   "Apex Systems",
-  "Insight Global",
-  "Robert Half",
+  "Aerotek",
+  "Beacon Hill Staffing",
+  "Collabera",
   "TEKsystems",
-  "Direct Client",
+  "Kforce",
+  "Insight Global",
+  "Robert Half Technology",
+  "Randstad Technologies",
+  "Addison Group",
+  "Akraya",
+  "ATR International",
+  "Bullhorn Staffing Portal",
+  "JobDiva ATS Portal",
+  "CVTracer Portal",
 ];
 
 const ORIGINS: OriginChannel[] = [
