@@ -74,6 +74,25 @@ function IntegrationCardShell({
   );
 }
 
+function startGoogleOAuth(includeGmail = false) {
+  const clientId =
+    (import.meta as any).env?.VITE_GOOGLE_CLIENT_ID ||
+    "756858024939-gv1l0jlli08batkho4nql3et875sd63m.apps.googleusercontent.com";
+  const redirectUri = `${window.location.origin}/integrations`;
+  const scopes = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/userinfo.email",
+  ];
+  if (includeGmail) {
+    scopes.push("https://www.googleapis.com/auth/gmail.readonly");
+  }
+  const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${encodeURIComponent(
+    redirectUri
+  )}&response_type=token&scope=${encodeURIComponent(scopes.join(" "))}&prompt=consent`;
+
+  window.location.href = authUrl;
+}
+
 function SheetsCard() {
   const { data: configs = [] } = useIntegrationConfigs();
   const { data: requirements = [] } = useRequirements();
@@ -152,19 +171,31 @@ function SheetsCard() {
         }
       }
 
-      await upsert.mutateAsync({
-        integration_type: "google_sheets",
-        enabled: true,
-        config: {
-          ...cfg,
-          access_token: token,
-          email: userEmail,
-          sheet_id: createdId,
-          sheet_url: createdUrl,
-          auto_new: true,
-          auto_status: true,
-        },
-      });
+      // Upsert both Google Sheets and Gmail configurations together
+      await Promise.all([
+        upsert.mutateAsync({
+          integration_type: "google_sheets",
+          enabled: true,
+          config: {
+            ...cfg,
+            access_token: token,
+            email: userEmail,
+            sheet_id: createdId,
+            sheet_url: createdUrl,
+            auto_new: true,
+            auto_status: true,
+          },
+        }),
+        upsert.mutateAsync({
+          integration_type: "gmail",
+          enabled: true,
+          config: {
+            access_token: token,
+            email: userEmail,
+            connected_at: new Date().toISOString(),
+          },
+        }),
+      ]);
 
       toast.success(`Connected as ${userEmail}!`, { id: toastId });
     } catch (err: any) {
@@ -173,31 +204,30 @@ function SheetsCard() {
   }
 
   function handleConnectGoogleOAuth() {
-    const clientId =
-      (import.meta as any).env?.VITE_GOOGLE_CLIENT_ID ||
-      "756858024939-gv1l0jlli08batkho4nql3et875sd63m.apps.googleusercontent.com";
-    const redirectUri = `${window.location.origin}/integrations`;
-    const scopes = encodeURIComponent(
-      "https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/userinfo.email"
-    );
-    const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${encodeURIComponent(
-      redirectUri
-    )}&response_type=token&scope=${scopes}&prompt=consent`;
-
-    window.location.href = authUrl;
+    startGoogleOAuth(false);
   }
 
   async function handleDisconnectOAuth() {
     try {
-      await upsert.mutateAsync({
-        integration_type: "google_sheets",
-        enabled: false,
-        config: {
-          ...cfg,
-          access_token: null,
-          email: null,
-        },
-      });
+      await Promise.all([
+        upsert.mutateAsync({
+          integration_type: "google_sheets",
+          enabled: false,
+          config: {
+            ...cfg,
+            access_token: null,
+            email: null,
+          },
+        }),
+        upsert.mutateAsync({
+          integration_type: "gmail",
+          enabled: false,
+          config: {
+            access_token: null,
+            email: null,
+          },
+        }),
+      ]);
       toast.success("Google account disconnected");
     } catch (e: any) {
       toast.error(e.message || "Failed to disconnect");
@@ -636,19 +666,31 @@ function DiceCard() {
 
 function GmailCard() {
   const { data: configs = [] } = useIntegrationConfigs();
-  const config = configs.find((c: any) => c.integration_type === "gmail");
-  const isConnected = Boolean(config?.enabled && (config?.config as any)?.refresh_token);
-  const startOAuth = useStartGoogleOAuth();
+  const sheetsConfig = configs.find((c: any) => c.integration_type === "google_sheets");
+  const gmailConfig = configs.find((c: any) => c.integration_type === "gmail");
+  const upsert = useUpsertIntegrationConfig();
+
+  const userEmail = (gmailConfig?.config as any)?.email || (sheetsConfig?.config as any)?.email;
+  const isConnected = Boolean(
+    (gmailConfig?.enabled && ((gmailConfig?.config as any)?.email || (gmailConfig?.config as any)?.access_token)) ||
+    (sheetsConfig?.enabled && (sheetsConfig?.config as any)?.email)
+  );
+
   const runParse = useRunGmailParse();
   const [previews, setPreviews] = useState<any[]>([]);
+  const [filterRule, setFilterRule] = useState("is:unread from:(jobs OR requirements)");
   const vendors = ["TCS", "Infosys", "Cognizant", "Collabera", "Wipro"];
 
-  async function connect() {
+  async function handleDisconnect() {
     try {
-      const url = await startOAuth.mutateAsync();
-      window.open(url, "_blank", "width=500,height=650");
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Failed to start Google connection");
+      await upsert.mutateAsync({
+        integration_type: "gmail",
+        enabled: false,
+        config: { access_token: null, email: null },
+      });
+      toast.success("Gmail integration disconnected");
+    } catch (e: any) {
+      toast.error(e.message || "Failed to disconnect");
     }
   }
 
@@ -656,49 +698,106 @@ function GmailCard() {
     try {
       const result = await runParse.mutateAsync();
       setPreviews(result.previews ?? []);
-      toast.success(`Scanned ${result.scanned}, extracted ${result.extracted} requirements`);
+      toast.success(`Scanned ${result.scanned} emails, extracted ${result.extracted} requirements`);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Gmail scan failed — connect Google first");
+      toast.error(e instanceof Error ? e.message : "Gmail scan failed");
     }
   }
 
   return (
     <IntegrationCardShell
-      Icon={Mail} title="Gmail parser"
+      Icon={Mail}
+      title="Gmail parser"
       subtitle="Read-only Gmail access. AI extracts requirements from emails."
-      connected={isConnected} status={isConnected ? "ok" : "unknown"} onRun={handleRun} running={runParse.isPending}
+      connected={isConnected}
+      status={isConnected ? "ok" : "unknown"}
+      onRun={handleRun}
+      running={runParse.isPending}
     >
       <div className="grid gap-4 lg:grid-cols-2">
         <div className="space-y-3">
-          {!isConnected && (
-            <Button className="w-full" onClick={connect} disabled={startOAuth.isPending}>
-              {startOAuth.isPending ? "Opening Google…" : "Connect Gmail (shares Google connection with Sheets)"}
+          {isConnected ? (
+            <div className="flex items-center justify-between rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3 text-xs">
+              <div>
+                <div className="font-semibold text-foreground flex items-center gap-1.5">
+                  <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+                  Connected with Google
+                </div>
+                <div className="text-muted-foreground">{userEmail || "Google Account Connected"}</div>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 text-xs text-destructive hover:bg-destructive/10"
+                onClick={handleDisconnect}
+              >
+                Disconnect
+              </Button>
+            </div>
+          ) : (
+            <Button
+              className="w-full"
+              onClick={() => startGoogleOAuth(true)}
+            >
+              <Mail className="mr-2 h-4 w-4" />
+              Connect Gmail (1-Click Google OAuth)
             </Button>
           )}
+
           <div>
-            <Label>Filter rule</Label>
-            <Input defaultValue="is:unread from:(jobs OR requirements)" />
+            <Label className="text-xs font-medium">Filter rule</Label>
+            <Input
+              value={filterRule}
+              onChange={(e) => setFilterRule(e.target.value)}
+              placeholder="is:unread from:(jobs OR requirements)"
+              className="text-xs mt-1"
+            />
           </div>
           <div>
-            <Label>Common vendor domains</Label>
+            <Label className="text-xs font-medium">Common vendor domains</Label>
             <div className="mt-1 flex flex-wrap gap-1.5">
               {vendors.map((v) => (
-                <span key={v} className="rounded bg-primary/15 px-2 py-0.5 text-xs font-medium text-primary">{v}</span>
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => {
+                    const rule = ` OR from:${v.toLowerCase()}.com`;
+                    if (!filterRule.includes(v.toLowerCase())) {
+                      setFilterRule((prev) => `${prev}${rule}`);
+                    }
+                  }}
+                  className="rounded bg-primary/15 px-2 py-0.5 text-xs font-medium text-primary hover:bg-primary/25 transition-colors cursor-pointer"
+                  title={`Add ${v} to filter rule`}
+                >
+                  +{v}
+                </button>
               ))}
             </div>
-            <p className="mt-1 text-xs text-muted-foreground">Refine the filter rule above to target these senders, e.g. "from:tcs.com OR from:infosys.com".</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Click any vendor tag to add to the inbox search filter. AI scans incoming emails and extracts client, tech stack, and pay rate.
+            </p>
           </div>
         </div>
+
         <div>
-          <div className="text-sm font-medium">Last run — extracted requirements</div>
+          <div className="text-sm font-medium flex items-center justify-between">
+            <span>Last run — extracted requirements</span>
+            {isConnected && <span className="text-[11px] text-emerald-600 font-medium">● Connected & Ready</span>}
+          </div>
           {previews.length === 0 ? (
-            <p className="mt-2 text-sm text-muted-foreground">Click "Run now" to scan your inbox.</p>
+            <div className="mt-2 rounded-md border border-dashed border-border p-6 text-center text-xs text-muted-foreground">
+              <Mail className="mx-auto mb-2 h-6 w-6 opacity-40" />
+              <p>Click "Run now" to scan your inbox.</p>
+            </div>
           ) : (
             <ul className="mt-2 space-y-2">
               {previews.map((p, i) => (
-                <li key={i} className="rounded-md border border-border p-3 text-sm">
-                  <div className="font-medium">{p.subject}</div>
-                  <div className="text-xs text-muted-foreground">From {p.from} · ✓ Extracted</div>
+                <li key={i} className="rounded-md border border-border p-3 text-xs space-y-1">
+                  <div className="font-medium text-foreground">{p.subject}</div>
+                  <div className="flex items-center justify-between text-muted-foreground">
+                    <span>From {p.from}</span>
+                    <span className="text-emerald-600 font-medium">✓ Extracted to Pipeline</span>
+                  </div>
                 </li>
               ))}
             </ul>
