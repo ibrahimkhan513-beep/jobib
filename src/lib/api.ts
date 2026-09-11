@@ -56,6 +56,7 @@ export function useCreateRequirement() {
         .select()
         .single();
       if (error) throw error;
+      syncRequirementsToGoogleSheet([data]).catch(() => {});
       return data;
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ["requirements"] }),
@@ -519,6 +520,7 @@ export function useRunGmailParse() {
 
 // --- Vendor Portals Scraper ---
 import { scrapeVendorPortals, generateTopVendorRequirements, type ScrapeFilterOptions } from "./portal-scraper";
+import { syncRequirementsToGoogleSheet } from "./sheets-sync";
 
 export function useScrapeVendorPortals() {
   const qc = useQueryClient();
@@ -562,6 +564,11 @@ export function useScrapeVendorPortals() {
 
       const { data, error } = await supabase.from("requirements").insert(rowsToInsert).select();
       if (error) throw error;
+
+      // Auto-sync newly ingested requirements to connected Google Sheet
+      if (data && data.length > 0) {
+        syncRequirementsToGoogleSheet(data).catch(() => {});
+      }
 
       // Log in sync_logs
       await supabase.from("sync_logs").insert({
@@ -622,6 +629,11 @@ export function useBulkIngestTopVendors() {
 
       const { data, error } = await supabase.from("requirements").insert(rows).select();
       if (error) throw error;
+
+      // Auto-sync newly ingested requirements to connected Google Sheet
+      if (data && data.length > 0) {
+        syncRequirementsToGoogleSheet(data).catch(() => {});
+      }
 
       await supabase.from("sync_logs").insert({
         workspace_id,

@@ -6,12 +6,12 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { useRequirements, useCreateRequirement, useUpdateRequirement, useMarketRates, useConsultants } from "@/lib/api";
+import { useRequirements, useCreateRequirement, useUpdateRequirement, useMarketRates, useConsultants, useScrapeVendorPortals } from "@/lib/api";
 import { scoreRequirement, checkGhostJob } from "@/lib/scoring";
 import { matchRequirementToConsultants } from "@/lib/matching";
 import { toast } from "sonner";
-import { AlertTriangle, Plus, Search, Edit3, ArrowUpRight, FileText, Send, Users, Sparkles, Globe, Loader2 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { AlertTriangle, Plus, Search, Edit3, ArrowUpRight, FileText, Send, Users, Sparkles, Globe, Loader2, RefreshCw } from "lucide-react";
+import { useMemo, useState, useEffect } from "react";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -35,6 +35,47 @@ function RequirementsPage() {
   const [addOpen, setAddOpen] = useState(false);
   const [scraperOpen, setScraperOpen] = useState(false);
   const { data: seed = [], isLoading } = useRequirements();
+
+  // Continuous Auto-Analysis & Auto-Sync State
+  const [autoScrapeEnabled, setAutoScrapeEnabled] = useState<boolean>(() => {
+    if (typeof window === "undefined") return true;
+    const val = localStorage.getItem("jobib_auto_scrape_enabled");
+    return val === null ? true : val === "true";
+  });
+  const [autoIntervalMins, setAutoIntervalMins] = useState<number>(() => {
+    if (typeof window === "undefined") return 15;
+    return Number(localStorage.getItem("jobib_auto_scrape_interval")) || 15;
+  });
+  const [lastAutoRun, setLastAutoRun] = useState<string | null>(null);
+  const [isAutoRunning, setIsAutoRunning] = useState(false);
+
+  const scrapePortalsMutation = useScrapeVendorPortals();
+
+  // Background Auto-Scraper & Google Sheets Sync Interval
+  useEffect(() => {
+    if (!autoScrapeEnabled) return;
+
+    const runAutoCycle = async () => {
+      try {
+        setIsAutoRunning(true);
+        const res = await scrapePortalsMutation.mutateAsync({ count: 5 });
+        setLastAutoRun(new Date().toLocaleTimeString());
+        toast.info(
+          `⚡ Auto-Analysis: Scanned vendor portals & synced ${res.added} new jobs to pipeline and Google Sheet.`,
+          { duration: 4000 }
+        );
+      } catch (e) {
+        // silent background
+      } finally {
+        setIsAutoRunning(false);
+      }
+    };
+
+    const intervalMs = autoIntervalMins * 60 * 1000;
+    const timer = setInterval(runAutoCycle, intervalMs);
+
+    return () => clearInterval(timer);
+  }, [autoScrapeEnabled, autoIntervalMins]);
 
   const filtered = useMemo(() => {
     return seed.filter((r) => {
@@ -82,6 +123,88 @@ function RequirementsPage() {
         }
       />
       <div className="space-y-4 p-6">
+        {/* Continuous Portal Analysis & Auto-Sync Banner */}
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-primary/20 bg-primary/5 px-4 py-2.5 text-xs">
+          <div className="flex items-center gap-2.5">
+            <span className="relative flex h-2.5 w-2.5">
+              {autoScrapeEnabled && (
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+              )}
+              <span
+                className={`relative inline-flex rounded-full h-2.5 w-2.5 ${
+                  autoScrapeEnabled ? "bg-emerald-500" : "bg-muted-foreground"
+                }`}
+              />
+            </span>
+            <div>
+              <span className="font-semibold text-foreground">
+                {autoScrapeEnabled ? "Continuous Portal Analysis & Live Sync: Active" : "Continuous Portal Analysis: Paused"}
+              </span>
+              <span className="text-muted-foreground ml-2">
+                Analyzing 802 vendor portals every {autoIntervalMins}m & auto-syncing to Google Sheet.
+                {lastAutoRun && ` (Last run: ${lastAutoRun})`}
+              </span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Select
+              value={String(autoIntervalMins)}
+              onValueChange={(v) => {
+                const num = Number(v);
+                setAutoIntervalMins(num);
+                localStorage.setItem("jobib_auto_scrape_interval", String(num));
+              }}
+            >
+              <SelectTrigger className="h-7 text-[11px] w-28 bg-surface">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="5">Every 5 mins</SelectItem>
+                <SelectItem value="15">Every 15 mins</SelectItem>
+                <SelectItem value="30">Every 30 mins</SelectItem>
+                <SelectItem value="60">Every 1 hour</SelectItem>
+              </SelectContent>
+            </Select>
+
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={isAutoRunning}
+              className="h-7 text-[11px] px-2.5"
+              onClick={async () => {
+                try {
+                  setIsAutoRunning(true);
+                  const res = await scrapePortalsMutation.mutateAsync({ count: 5 });
+                  setLastAutoRun(new Date().toLocaleTimeString());
+                  toast.success(`Scanned portals & auto-synced ${res.added} new jobs!`);
+                } catch (e: any) {
+                  toast.error(e?.message || "Scan failed");
+                } finally {
+                  setIsAutoRunning(false);
+                }
+              }}
+            >
+              {isAutoRunning ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <RefreshCw className="h-3 w-3 mr-1" />}
+              Scan Now
+            </Button>
+
+            <Button
+              size="sm"
+              variant={autoScrapeEnabled ? "ghost" : "default"}
+              className="h-7 text-[11px] px-2.5"
+              onClick={() => {
+                const next = !autoScrapeEnabled;
+                setAutoScrapeEnabled(next);
+                localStorage.setItem("jobib_auto_scrape_enabled", String(next));
+                toast.info(next ? "Continuous auto-analysis resumed" : "Continuous auto-analysis paused");
+              }}
+            >
+              {autoScrapeEnabled ? "Pause" : "Resume"}
+            </Button>
+          </div>
+        </div>
+
         <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-surface p-3">
           <div className="relative flex-1 min-w-[220px]">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
