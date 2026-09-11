@@ -5,12 +5,27 @@ const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 export const DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile";
 
 export function getStoredGroqKey(): string {
-  if (typeof window === "undefined") return "";
-  try {
-    return localStorage.getItem(GROQ_STORAGE_KEY)?.trim() || "";
-  } catch {
-    return "";
+  // 1. Check localStorage first (allows setting/changing directly in UI)
+  if (typeof window !== "undefined") {
+    try {
+      const stored = localStorage.getItem(GROQ_STORAGE_KEY)?.trim();
+      if (stored) return stored;
+    } catch {
+      // ignore
+    }
   }
+
+  // 2. Check .env via Vite (VITE_GROQ_API_KEY)
+  try {
+    const envKey = (import.meta as any).env?.VITE_GROQ_API_KEY;
+    if (typeof envKey === "string" && envKey.trim()) {
+      return envKey.trim();
+    }
+  } catch {
+    // ignore
+  }
+
+  return "";
 }
 
 export function setStoredGroqKey(key: string): void {
@@ -63,6 +78,48 @@ Tailored Bullets Guidelines:
 - If no consultant profile is provided, return "tailored_bullets" as an empty array [].
 `;
 
+export const CANDIDATE_MODELS = [
+  "llama-3.3-70b-versatile",
+  "llama-3.1-8b-instant",
+  "llama3-70b-8192",
+  "llama3-8b-8192",
+  "mixtral-8x7b-32768",
+  "gemma2-9b-it",
+];
+
+let cachedWorkingModel: string | null = null;
+
+export async function detectBestGroqModel(apiKey: string): Promise<string> {
+  if (cachedWorkingModel) return cachedWorkingModel;
+
+  try {
+    const res = await fetch("https://api.groq.com/openai/v1/models", {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const modelIds: string[] = (data?.data || []).map((m: any) => m.id);
+
+      for (const candidate of CANDIDATE_MODELS) {
+        if (modelIds.includes(candidate)) {
+          cachedWorkingModel = candidate;
+          return candidate;
+        }
+      }
+
+      const anyLlama = modelIds.find((id) => id.includes("llama") && !id.includes("guard"));
+      if (anyLlama) {
+        cachedWorkingModel = anyLlama;
+        return anyLlama;
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  return "llama-3.1-8b-instant";
+}
+
 export async function callGroqAI(params: {
   jdText: string;
   consultant?: {
@@ -75,7 +132,7 @@ export async function callGroqAI(params: {
   } | null;
   apiKey?: string;
   model?: string;
-}): Promise<JDAnalysisResult> {
+}): Promise<JDAnalysisResult & { modelUsed?: string }> {
   const key = (params.apiKey || getStoredGroqKey()).trim();
   if (!key) {
     throw new Error("GROQ_API_KEY_REQUIRED");
@@ -96,66 +153,94 @@ export async function callGroqAI(params: {
       )}`
     : `TARGET JOB DESCRIPTION:\n${params.jdText}\n\n(No consultant provided. Extract skills, domain, seniority, pain points, and ghost job verdict only)`;
 
-  const response = await fetch(GROQ_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${key}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: params.model || DEFAULT_GROQ_MODEL,
-      temperature: 0.3,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: userContent },
-      ],
-    }),
-  });
+  // Determine which model to try first
+  const initialModel = params.model || (await detectBestGroqModel(key));
+  const modelsToTry = [
+    initialModel,
+    "llama-3.1-8b-instant",
+    "llama3-70b-8192",
+    "llama3-8b-8192",
+  ].filter((m, i, arr) => arr.indexOf(m) === i);
 
-  if (!response.ok) {
-    let errorDetail = `Groq API responded with status ${response.status}`;
+  let lastError = "";
+
+  for (const modelName of modelsToTry) {
     try {
-      const errJson = await response.json();
-      if (errJson?.error?.message) {
-        errorDetail = errJson.error.message;
+      const response = await fetch(GROQ_URL, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${key}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: modelName,
+          temperature: 0.3,
+          response_format: { type: "json_object" },
+          messages: [
+            { role: "system", content: SYSTEM_PROMPT },
+            { role: "user", content: userContent },
+          ],
+        }),
+      });
+
+      if (!response.ok) {
+        let errorDetail = `Groq API responded with status ${response.status}`;
+        try {
+          const errJson = await response.json();
+          if (errJson?.error?.message) {
+            errorDetail = errJson.error.message;
+          }
+        } catch {
+          // ignore
+        }
+
+        if (response.status === 401) {
+          throw new Error("Invalid Groq API Key. Please verify your key at console.groq.com/keys.");
+        }
+        if (response.status === 429) {
+          throw new Error("Groq API rate limit exceeded. Please wait a few moments or try again.");
+        }
+
+        // If this model does not exist on this key's tier, continue to next model
+        if (errorDetail.includes("does not exist") || errorDetail.includes("access")) {
+          console.warn(`Model ${modelName} not available for key, falling back to next model...`);
+          lastError = errorDetail;
+          continue;
+        }
+
+        throw new Error(errorDetail);
       }
-    } catch {
-      // ignore
-    }
 
-    if (response.status === 401) {
-      throw new Error("Invalid Groq API Key. Please verify your key at console.groq.com/keys.");
+      const data = await response.json();
+      const rawText = data?.choices?.[0]?.message?.content;
+      if (!rawText) {
+        throw new Error("Empty response returned by Groq AI model.");
+      }
+
+      cachedWorkingModel = modelName;
+
+      const parsed = JSON.parse(rawText);
+      return {
+        modelUsed: modelName,
+        must_have_skills: Array.isArray(parsed.must_have_skills) ? parsed.must_have_skills : [],
+        nice_to_have_skills: Array.isArray(parsed.nice_to_have_skills) ? parsed.nice_to_have_skills : [],
+        domain: parsed.domain || "Enterprise IT",
+        seniority: parsed.seniority || "Senior",
+        pain_points: Array.isArray(parsed.pain_points) ? parsed.pain_points : [],
+        tailored_bullets: Array.isArray(parsed.tailored_bullets) ? parsed.tailored_bullets : [],
+        ghost_job: {
+          is_ghost: Boolean(parsed.ghost_job?.is_ghost),
+          confidence: Number(parsed.ghost_job?.confidence) || 75,
+          reasons: Array.isArray(parsed.ghost_job?.reasons) ? parsed.ghost_job.reasons : ["Analysis completed"],
+        },
+      };
+    } catch (err: any) {
+      if (err.message?.includes("Invalid Groq API Key") || err.message?.includes("rate limit")) {
+        throw err;
+      }
+      lastError = err.message || String(err);
     }
-    if (response.status === 429) {
-      throw new Error("Groq API rate limit exceeded. Please wait a few moments or try again.");
-    }
-    throw new Error(errorDetail);
   }
 
-  const data = await response.json();
-  const rawText = data?.choices?.[0]?.message?.content;
-  if (!rawText) {
-    throw new Error("Empty response returned by Groq AI model.");
-  }
-
-  try {
-    const parsed = JSON.parse(rawText);
-    return {
-      must_have_skills: Array.isArray(parsed.must_have_skills) ? parsed.must_have_skills : [],
-      nice_to_have_skills: Array.isArray(parsed.nice_to_have_skills) ? parsed.nice_to_have_skills : [],
-      domain: parsed.domain || "Enterprise IT",
-      seniority: parsed.seniority || "Senior",
-      pain_points: Array.isArray(parsed.pain_points) ? parsed.pain_points : [],
-      tailored_bullets: Array.isArray(parsed.tailored_bullets) ? parsed.tailored_bullets : [],
-      ghost_job: {
-        is_ghost: Boolean(parsed.ghost_job?.is_ghost),
-        confidence: Number(parsed.ghost_job?.confidence) || 75,
-        reasons: Array.isArray(parsed.ghost_job?.reasons) ? parsed.ghost_job.reasons : ["Analysis completed"],
-      },
-    };
-  } catch (parseErr) {
-    console.error("Failed to parse Groq response as JSON:", rawText, parseErr);
-    throw new Error("Groq AI response could not be parsed as valid JSON.");
-  }
+  throw new Error(lastError || "Could not generate with any available Groq model.");
 }

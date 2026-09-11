@@ -48,6 +48,7 @@ function ResumeTailorPage() {
   const [consultantId, setConsultantId] = useState<string>(search.consultantId ?? "none");
   const [result, setResult] = useState<JDAnalysisResult | null>(null);
   const [engineUsed, setEngineUsed] = useState<"nlp" | "groq" | null>(null);
+  const [usedModelName, setUsedModelName] = useState<string>("LLaMA");
   const [activeTab, setActiveTab] = useState("analysis");
   const [copiedResume, setCopiedResume] = useState(false);
   const [copiedBullets, setCopiedBullets] = useState(false);
@@ -143,9 +144,11 @@ function ResumeTailorPage() {
           : null,
         apiKey: key,
       });
+      const modelLabel = (aiResult as any).modelUsed || "LLaMA";
+      setUsedModelName(modelLabel);
       setResult(aiResult);
       setEngineUsed("groq");
-      toast.success("Tailored with Groq AI (LLaMA 3.3 70B)!");
+      toast.success(`Tailored with Groq AI (${modelLabel})!`);
     } catch (err: any) {
       console.error("Groq AI analysis error:", err);
       if (err.message === "GROQ_API_KEY_REQUIRED" || err.message?.includes("Invalid Groq API Key")) {
@@ -389,7 +392,7 @@ function ResumeTailorPage() {
                   <span className="text-muted-foreground text-[11px]">Active Engine:</span>
                   {engineUsed === "groq" ? (
                     <span className="inline-flex items-center gap-1 font-semibold text-purple-700 dark:text-purple-300 bg-purple-500/10 px-2.5 py-0.5 rounded-full border border-purple-300 dark:border-purple-800 text-[11px]">
-                      <Sparkles className="h-3 w-3 text-purple-600" /> Groq AI (LLaMA 3.3 70B)
+                      <Sparkles className="h-3 w-3 text-purple-600" /> Groq AI ({usedModelName})
                     </span>
                   ) : (
                     <span className="inline-flex items-center gap-1 font-semibold text-amber-700 dark:text-amber-300 bg-amber-500/10 px-2.5 py-0.5 rounded-full border border-amber-300 dark:border-amber-800 text-[11px]">
