@@ -333,7 +333,7 @@ function ResumeTailorPage() {
                   <span className="text-xs font-semibold">✨ Groq AI Deep Tailor</span>
                 </div>
                 <span className="text-[10px] bg-white/20 text-white px-1.5 py-0.5 rounded font-mono font-medium">
-                  LLaMA 3.3 70B
+                  Groq Cloud AI
                 </span>
               </Button>
 
@@ -595,7 +595,7 @@ function ResumeTailorPage() {
               Connect Free Groq API Key
             </DialogTitle>
             <DialogDescription className="text-xs">
-              Jobib uses Groq's ultra-fast <strong>LLaMA 3.3 70B</strong> model for bespoke contextual resume bullets and deep JD insights.
+              Jobib uses Groq's high-speed cloud AI models for bespoke contextual resume bullets and deep JD insights.
             </DialogDescription>
           </DialogHeader>
 

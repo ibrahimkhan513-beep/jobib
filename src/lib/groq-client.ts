@@ -2,7 +2,6 @@ import type { JDAnalysisResult } from "./api";
 
 const GROQ_STORAGE_KEY = "jobib_groq_api_key";
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
-export const DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile";
 
 export function getStoredGroqKey(): string {
   // 1. Check localStorage first (allows setting/changing directly in UI)
@@ -41,6 +40,7 @@ export function clearStoredGroqKey(): void {
   if (typeof window === "undefined") return;
   try {
     localStorage.removeItem(GROQ_STORAGE_KEY);
+    cachedWorkingModel = null;
   } catch (e) {
     console.error("Failed to clear Groq API key", e);
   }
@@ -78,46 +78,108 @@ Tailored Bullets Guidelines:
 - If no consultant profile is provided, return "tailored_bullets" as an empty array [].
 `;
 
-export const CANDIDATE_MODELS = [
+// Known decommissioned or non-chat models that must NEVER be called
+const DECOMMISSIONED_OR_UNSUPPORTED = new Set([
+  "llama3-8b-8192",
+  "llama3-70b-8192",
+  "llama-3.1-70b-versatile",
+]);
+
+// Modern active models on Groq in priority order
+export const FALLBACK_CANDIDATE_MODELS = [
+  "openai/gpt-oss-120b",
+  "openai/gpt-oss-20b",
+  "meta-llama/llama-4-scout-17b-16e-instruct",
+  "meta-llama/llama-4-maverick-17b-128e-instruct",
   "llama-3.3-70b-versatile",
   "llama-3.1-8b-instant",
-  "llama3-70b-8192",
-  "llama3-8b-8192",
-  "mixtral-8x7b-32768",
+  "qwen/qwen3.6-27b",
+  "qwen/qwen3.8-27b",
+  "llama-3.3-70b-specdec",
+  "llama-3.2-3b-preview",
+  "llama-3.2-1b-preview",
+  "groq/compound-mini",
+  "groq/compound",
   "gemma2-9b-it",
+  "mixtral-8x7b-32768",
 ];
+
+export const CANDIDATE_MODELS = FALLBACK_CANDIDATE_MODELS;
+export const DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b";
 
 let cachedWorkingModel: string | null = null;
 
-export async function detectBestGroqModel(apiKey: string): Promise<string> {
-  if (cachedWorkingModel) return cachedWorkingModel;
-
+export async function getAvailableGroqModels(apiKey: string): Promise<string[]> {
   try {
     const res = await fetch("https://api.groq.com/openai/v1/models", {
       headers: { Authorization: `Bearer ${apiKey}` },
     });
-    if (res.ok) {
-      const data = await res.json();
-      const modelIds: string[] = (data?.data || []).map((m: any) => m.id);
+    if (!res.ok) return [];
 
-      for (const candidate of CANDIDATE_MODELS) {
-        if (modelIds.includes(candidate)) {
-          cachedWorkingModel = candidate;
-          return candidate;
-        }
-      }
+    const json = await res.json();
+    const list: any[] = json?.data || [];
 
-      const anyLlama = modelIds.find((id) => id.includes("llama") && !id.includes("guard"));
-      if (anyLlama) {
-        cachedWorkingModel = anyLlama;
-        return anyLlama;
-      }
-    }
-  } catch {
-    // ignore
+    const validModels = list
+      .filter((m) => {
+        if (!m || !m.id || typeof m.id !== "string") return false;
+        const id = m.id.toLowerCase();
+        if (m.active === false) return false;
+        if (DECOMMISSIONED_OR_UNSUPPORTED.has(id)) return false;
+        if (id.includes("guard") || id.includes("safeguard") || id.includes("moderation")) return false;
+        if (id.includes("whisper") || id.includes("orpheus") || id.includes("tts")) return false;
+        if (id.includes("rerank") || id.includes("embed")) return false;
+        return true;
+      })
+      .map((m) => m.id);
+
+    // Sort by priority
+    return [...validModels].sort((a, b) => {
+      const idxA = FALLBACK_CANDIDATE_MODELS.indexOf(a);
+      const idxB = FALLBACK_CANDIDATE_MODELS.indexOf(b);
+      const scoreA = idxA === -1 ? 999 : idxA;
+      const scoreB = idxB === -1 ? 999 : idxB;
+      return scoreA - scoreB;
+    });
+  } catch (err) {
+    console.warn("Could not query Groq /v1/models directly:", err);
+    return [];
+  }
+}
+
+export async function detectBestGroqModel(apiKey: string): Promise<string> {
+  if (cachedWorkingModel && !DECOMMISSIONED_OR_UNSUPPORTED.has(cachedWorkingModel)) {
+    return cachedWorkingModel;
   }
 
-  return "llama-3.1-8b-instant";
+  const available = await getAvailableGroqModels(apiKey);
+  if (available.length > 0) {
+    cachedWorkingModel = available[0];
+    return available[0];
+  }
+
+  return FALLBACK_CANDIDATE_MODELS[0];
+}
+
+export function extractAndParseJson(rawText: string): any {
+  let cleaned = rawText.trim();
+
+  // Strip markdown code fences if present (e.g. ```json ... ```)
+  if (cleaned.startsWith("```")) {
+    cleaned = cleaned.replace(/^```(?:json)?\s*/i, "");
+    const fenceIndex = cleaned.lastIndexOf("```");
+    if (fenceIndex !== -1) {
+      cleaned = cleaned.substring(0, fenceIndex);
+    }
+  }
+
+  cleaned = cleaned.trim();
+  const firstBrace = cleaned.indexOf("{");
+  const lastBrace = cleaned.lastIndexOf("}");
+  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace >= firstBrace) {
+    cleaned = cleaned.substring(firstBrace, lastBrace + 1);
+  }
+
+  return JSON.parse(cleaned);
 }
 
 export async function callGroqAI(params: {
@@ -153,34 +215,47 @@ export async function callGroqAI(params: {
       )}`
     : `TARGET JOB DESCRIPTION:\n${params.jdText}\n\n(No consultant provided. Extract skills, domain, seniority, pain points, and ghost job verdict only)`;
 
-  // Determine which model to try first
-  const initialModel = params.model || (await detectBestGroqModel(key));
-  const modelsToTry = [
-    initialModel,
-    "llama-3.1-8b-instant",
-    "llama3-70b-8192",
-    "llama3-8b-8192",
-  ].filter((m, i, arr) => arr.indexOf(m) === i);
+  // Discover live models for this key
+  const available = await getAvailableGroqModels(key);
+  const pool = available.length > 0 ? available : FALLBACK_CANDIDATE_MODELS;
+
+  // Build candidate order to try
+  const modelsToTry: string[] = [];
+  if (params.model && !DECOMMISSIONED_OR_UNSUPPORTED.has(params.model)) {
+    modelsToTry.push(params.model);
+  }
+  if (cachedWorkingModel && !modelsToTry.includes(cachedWorkingModel) && !DECOMMISSIONED_OR_UNSUPPORTED.has(cachedWorkingModel)) {
+    modelsToTry.push(cachedWorkingModel);
+  }
+
+  for (const m of pool) {
+    if (!modelsToTry.includes(m) && !DECOMMISSIONED_OR_UNSUPPORTED.has(m)) {
+      modelsToTry.push(m);
+    }
+  }
 
   let lastError = "";
 
-  for (const modelName of modelsToTry) {
+  // Try up to top 5 valid models sequentially
+  for (const modelName of modelsToTry.slice(0, 5)) {
     try {
-      const response = await fetch(GROQ_URL, {
+      const bodyPayload = {
+        model: modelName,
+        temperature: 0.3,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: userContent },
+        ],
+      };
+
+      let response = await fetch(GROQ_URL, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${key}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          model: modelName,
-          temperature: 0.3,
-          response_format: { type: "json_object" },
-          messages: [
-            { role: "system", content: SYSTEM_PROMPT },
-            { role: "user", content: userContent },
-          ],
-        }),
+        body: JSON.stringify(bodyPayload),
       });
 
       if (!response.ok) {
@@ -201,14 +276,51 @@ export async function callGroqAI(params: {
           throw new Error("Groq API rate limit exceeded. Please wait a few moments or try again.");
         }
 
-        // If this model does not exist on this key's tier, continue to next model
-        if (errorDetail.includes("does not exist") || errorDetail.includes("access")) {
-          console.warn(`Model ${modelName} not available for key, falling back to next model...`);
-          lastError = errorDetail;
-          continue;
+        const lower = errorDetail.toLowerCase();
+
+        // If json_object response_format is not supported on this model, retry once without it
+        if (lower.includes("response_format") || lower.includes("json_object")) {
+          const retryRes = await fetch(GROQ_URL, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${key}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              model: modelName,
+              temperature: 0.3,
+              messages: [
+                { role: "system", content: SYSTEM_PROMPT },
+                { role: "user", content: userContent },
+              ],
+            }),
+          });
+          if (retryRes.ok) {
+            response = retryRes;
+          }
         }
 
-        throw new Error(errorDetail);
+        if (!response.ok) {
+          const isModelUnavailable =
+            response.status === 404 ||
+            lower.includes("does not exist") ||
+            lower.includes("access") ||
+            lower.includes("decommissioned") ||
+            lower.includes("no longer supported") ||
+            lower.includes("deprecated") ||
+            lower.includes("not found") ||
+            lower.includes("unsupported") ||
+            lower.includes("unknown model") ||
+            lower.includes("invalid model");
+
+          if (isModelUnavailable) {
+            console.warn(`Groq model '${modelName}' unavailable (${errorDetail}), trying next model...`);
+            lastError = errorDetail;
+            continue;
+          }
+
+          throw new Error(errorDetail);
+        }
       }
 
       const data = await response.json();
@@ -219,7 +331,7 @@ export async function callGroqAI(params: {
 
       cachedWorkingModel = modelName;
 
-      const parsed = JSON.parse(rawText);
+      const parsed = extractAndParseJson(rawText);
       return {
         modelUsed: modelName,
         must_have_skills: Array.isArray(parsed.must_have_skills) ? parsed.must_have_skills : [],
@@ -239,6 +351,7 @@ export async function callGroqAI(params: {
         throw err;
       }
       lastError = err.message || String(err);
+      console.warn(`Groq model ${modelName} attempt error:`, lastError);
     }
   }
 

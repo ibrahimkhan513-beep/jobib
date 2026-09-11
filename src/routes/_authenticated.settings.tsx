@@ -175,7 +175,7 @@ function SettingsPage() {
     <div>
       <PageHeader title="Settings" subtitle="Workspace, API keys, market rates, and exports." />
       <div className="grid gap-6 p-6 lg:grid-cols-2">
-        <Card title="AI Provider (Groq LLaMA 3.3 70B)" desc="Powers deep contextual JD analysis, ATS resume tailoring, and ghost job detection.">
+        <Card title="AI Provider (Groq Cloud AI)" desc="Powers deep contextual JD analysis, ATS resume tailoring, and ghost job detection.">
           <div className="space-y-3 text-xs">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-1.5">
