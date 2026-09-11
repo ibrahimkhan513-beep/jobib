@@ -96,11 +96,17 @@ function ResumeTailorPage() {
       });
       setResult(data);
       toast.success("AI analysis completed successfully!");
-    } catch {
-      // Seamless intelligent local fallback
-      const localResult = analyzeJDLocally(jd, selectedConsultant);
-      setResult(localResult);
-      toast.success("Analyzed and tailored using built-in NLP engine!");
+    } catch (edgeErr) {
+      console.log("Edge function unavailable or no GROQ_API_KEY, switching to local NLP engine:", edgeErr);
+      try {
+        // Seamless intelligent local fallback
+        const localResult = analyzeJDLocally(jd, selectedConsultant);
+        setResult(localResult);
+        toast.success("Analyzed & tailored using built-in NLP engine!");
+      } catch (localErr) {
+        console.error("Local NLP analysis error:", localErr);
+        toast.error("Error analyzing JD. Please check console.");
+      }
     }
   }
 

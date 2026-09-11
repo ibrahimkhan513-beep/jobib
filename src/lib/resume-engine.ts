@@ -23,6 +23,17 @@ const DOMAIN_KEYWORDS: Record<string, string[]> = {
   "Insurance": ["insurance", "underwriting", "claims", "policy", "actuarial", "annuity"],
 };
 
+function escapeRegex(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function matchTerm(text: string, term: string): boolean {
+  const escaped = escapeRegex(term);
+  // Safe boundary pattern that handles terms with symbols like C++, C#, .NET
+  const regex = new RegExp(`(?:^|[^a-zA-Z0-9#+.-])${escaped}(?![a-zA-Z0-9#+.-])`, "i");
+  return regex.test(text);
+}
+
 /**
  * Intelligent client-side JD analysis and bullet synthesizer.
  * Runs instantly when an external Groq API key is not yet set,
@@ -37,8 +48,7 @@ export function analyzeJDLocally(
   // 1. Extract Skills
   const foundSkills: string[] = [];
   COMMON_TECH_TERMS.forEach((term) => {
-    const regex = new RegExp(`\\b${term.replace(/\./g, "\\.")}\\b`, "i");
-    if (regex.test(jdText)) {
+    if (matchTerm(jdText, term)) {
       foundSkills.push(term);
     }
   });
