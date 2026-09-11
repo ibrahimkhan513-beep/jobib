@@ -118,6 +118,35 @@ export function useCreateConsultant() {
   });
 }
 
+export function useUpdateConsultant() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, patch }: { id: string; patch: Partial<ConsultantRow> }) => {
+      const { data, error } = await supabase.from("consultants").update(patch).eq("id", id).select().single();
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["consultants"] });
+      qc.invalidateQueries({ queryKey: ["submissions"] });
+    },
+  });
+}
+
+export function useDeleteConsultant() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from("consultants").delete().eq("id", id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["consultants"] });
+      qc.invalidateQueries({ queryKey: ["submissions"] });
+    },
+  });
+}
+
 // --- Submissions ---
 export function useSubmissions() {
   return useQuery({
