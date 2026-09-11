@@ -568,6 +568,9 @@ function AddConsultantModal({ onDone }: { onDone: () => void }) {
   const [years, setYears] = useState("");
   const [workAuth, setWorkAuth] = useState("");
   const [avail, setAvail] = useState("");
+  const [lastProj, setLastProj] = useState("");
+  const [clientType, setClientType] = useState("");
+  const [duration, setDuration] = useState("");
 
   async function save() {
     if (!name.trim()) return toast.error("Name is required");
@@ -581,8 +584,11 @@ function AddConsultantModal({ onDone }: { onDone: () => void }) {
         work_authorization: workAuth || null,
         availability_date: avail || null,
         bench_status: "available",
+        last_project_title: lastProj || null,
+        last_client_type: clientType || null,
+        last_project_duration: duration || null,
       });
-      toast.success("Consultant added");
+      toast.success("Consultant added to bench");
       onDone();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Failed to add consultant");
@@ -590,13 +596,16 @@ function AddConsultantModal({ onDone }: { onDone: () => void }) {
   }
 
   return (
-    <DialogContent className="max-w-xl">
+    <DialogContent className="max-w-xl max-h-[90vh] overflow-y-auto">
       <DialogHeader>
         <DialogTitle>Add Bench Consultant</DialogTitle>
+        <DialogDescription className="text-xs">
+          Add a candidate to your bench. Their skills and project history are used for AI resume tailoring and requirement matching.
+        </DialogDescription>
       </DialogHeader>
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="sm:col-span-2">
-          <Label>Full name</Label>
+          <Label>Full name *</Label>
           <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Arjun Mehta" />
         </div>
         <div>
@@ -613,15 +622,27 @@ function AddConsultantModal({ onDone }: { onDone: () => void }) {
         </div>
         <div>
           <Label>Years experience</Label>
-          <Input type="number" value={years} onChange={(e) => setYears(e.target.value)} placeholder="9" />
+          <Input type="number" value={years} onChange={(e) => setYears(e.target.value)} placeholder="8" />
         </div>
         <div>
           <Label>Work authorization</Label>
           <Input value={workAuth} onChange={(e) => setWorkAuth(e.target.value)} placeholder="USC / GC / H1B" />
         </div>
-        <div className="sm:col-span-2">
+        <div>
           <Label>Availability date</Label>
           <Input value={avail} onChange={(e) => setAvail(e.target.value)} placeholder="Immediate or YYYY-MM-DD" />
+        </div>
+        <div>
+          <Label>Last project title</Label>
+          <Input value={lastProj} onChange={(e) => setLastProj(e.target.value)} placeholder="Senior Cloud Architect" />
+        </div>
+        <div>
+          <Label>Client type / Domain</Label>
+          <Input value={clientType} onChange={(e) => setClientType(e.target.value)} placeholder="Banking / Healthcare / Retail" />
+        </div>
+        <div>
+          <Label>Project duration</Label>
+          <Input value={duration} onChange={(e) => setDuration(e.target.value)} placeholder="2+ years" />
         </div>
       </div>
       <div className="flex justify-end gap-2 pt-2">
@@ -629,7 +650,7 @@ function AddConsultantModal({ onDone }: { onDone: () => void }) {
           Cancel
         </Button>
         <Button onClick={save} disabled={create.isPending}>
-          {create.isPending ? "Saving…" : "Save"}
+          {create.isPending ? "Saving…" : "Save to Bench"}
         </Button>
       </div>
     </DialogContent>
