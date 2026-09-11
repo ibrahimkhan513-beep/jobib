@@ -1,4 +1,4 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { PageHeader } from "@/components/app-shell";
 import { OriginIcon, ScoreBadge, SourceBadge } from "@/components/req-badges";
 import { Button } from "@/components/ui/button";
@@ -34,6 +34,7 @@ function isThisWeek(dateStr: string | null) {
 }
 
 function Dashboard() {
+  const navigate = useNavigate();
   const { data: requirements = [], isLoading } = useRequirements();
   const { data: submissions = [] } = useSubmissions();
   const { data: syncLogs = [] } = useSyncLogs();
@@ -128,9 +129,36 @@ function Dashboard() {
                     </div>
                     <ScoreBadge score={r.req_score} />
                     <div className="flex gap-1">
-                      <Button size="sm" variant="ghost">View</Button>
-                      <Button size="sm" variant="ghost">Tailor</Button>
-                      <Button size="sm">Submit</Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => navigate({ to: "/requirements" })}
+                      >
+                        View
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() =>
+                          navigate({
+                            to: "/resume-tailor",
+                            search: { reqId: r.id },
+                          })
+                        }
+                      >
+                        Tailor
+                      </Button>
+                      <Button
+                        size="sm"
+                        onClick={() =>
+                          navigate({
+                            to: "/submit",
+                            search: { reqId: r.id },
+                          })
+                        }
+                      >
+                        Submit
+                      </Button>
                     </div>
                   </li>
                 ))}

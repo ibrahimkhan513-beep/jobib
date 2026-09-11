@@ -357,3 +357,105 @@ export async function callGroqAI(params: {
 
   throw new Error(lastError || "Could not generate with any available Groq model.");
 }
+
+export async function callGroqAIPitch(params: {
+  consultant: any;
+  requirement: any;
+  payRate?: number;
+  apiKey?: string;
+}): Promise<{ bullets: string; fullEmail: string; modelUsed: string }> {
+  const key = (params.apiKey || getStoredGroqKey()).trim();
+  if (!key) {
+    throw new Error("GROQ_API_KEY_REQUIRED");
+  }
+
+  const { consultant, requirement, payRate } = params;
+  const prompt = `You are an elite US IT Staffing Account Executive.
+Synthesize an irresistible submission pitch and executive email for this consultant submitted to the requirement.
+
+CONSULTANT:
+Name: ${consultant.full_name}
+Years Experience: ${consultant.years_experience || 7}
+Work Authorization: ${consultant.work_authorization || "US Citizen / Green Card / C2C Eligible"}
+Core Tech Stack: ${(consultant.tech_stack ?? []).join(", ")}
+Last Project Title: ${consultant.last_project_title || "Senior Software Engineer"}
+Last Client Type: ${consultant.last_client_type || "Enterprise"}
+Last Project Duration: ${consultant.last_project_duration || "18 months"}
+
+REQUIREMENT:
+Job Title: ${requirement.title}
+Client: ${requirement.client_masked || requirement.vendor_name || "Direct Client"}
+Location: ${[requirement.location_city, requirement.location_state].filter(Boolean).join(", ") || "Remote/Hybrid"}
+Target Rate: $${requirement.rate_max || 85}/hr
+Tech Stack Required: ${(requirement.tech_stack ?? []).join(", ")}
+JD Summary: ${(requirement.jd_text || "").substring(0, 800)}
+${payRate ? `Target Pay Rate: $${payRate}/hr` : ""}
+
+Return a JSON object with:
+{
+  "bullets": "• 3 crisp bullet points highlighting XYZ accomplishments, project impact, and availability (string separated by newlines)",
+  "fullEmail": "Professional, personalized email pitch to the Account Manager starting with greeting, candidate highlights, rate/availability, and interview readiness"
+}`;
+
+  const available = await getAvailableGroqModels(key);
+  const pool = available.length > 0 ? available : FALLBACK_CANDIDATE_MODELS;
+
+  const modelsToTry: string[] = [];
+  if (cachedWorkingModel && !DECOMMISSIONED_OR_UNSUPPORTED.has(cachedWorkingModel)) {
+    modelsToTry.push(cachedWorkingModel);
+  }
+  for (const m of pool) {
+    if (!modelsToTry.includes(m) && !DECOMMISSIONED_OR_UNSUPPORTED.has(m)) {
+      modelsToTry.push(m);
+    }
+  }
+
+  let lastError = "";
+
+  for (const modelName of modelsToTry.slice(0, 4)) {
+    try {
+      const response = await fetch(GROQ_URL, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${key}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: modelName,
+          temperature: 0.35,
+          response_format: { type: "json_object" },
+          messages: [
+            {
+              role: "system",
+              content: "You are a senior US IT staffing specialist. Respond ONLY with valid JSON with keys 'bullets' and 'fullEmail'.",
+            },
+            { role: "user", content: prompt },
+          ],
+        }),
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        lastError = errText;
+        continue;
+      }
+
+      const data = await response.json();
+      const rawText = data?.choices?.[0]?.message?.content;
+      if (!rawText) continue;
+
+      cachedWorkingModel = modelName;
+      const parsed = extractAndParseJson(rawText);
+      return {
+        bullets: parsed.bullets || "",
+        fullEmail: parsed.fullEmail || "",
+        modelUsed: modelName,
+      };
+    } catch (e: any) {
+      lastError = e.message || String(e);
+    }
+  }
+
+  throw new Error(lastError || "Could not generate pitch with Groq AI");
+}
+
