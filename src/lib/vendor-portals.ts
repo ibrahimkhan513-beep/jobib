@@ -1,3 +1,5 @@
+import allVendorPortalsRaw from "./all-vendor-portals.json";
+
 export interface VendorPortal {
   id: string;
   name: string;
@@ -9,7 +11,7 @@ export interface VendorPortal {
   notes?: string;
 }
 
-export const VENDOR_PORTALS: VendorPortal[] = [
+export const FEATURED_VENDOR_PORTALS: VendorPortal[] = [
   // --- Tier-1 Staffing Giants ---
   {
     id: "apex-systems",
@@ -327,6 +329,14 @@ export const VENDOR_PORTALS: VendorPortal[] = [
     headquarters: "Rockville, MD",
     notes: "Public and private sector IT solutions provider.",
   },
+];
+
+const featuredIds = new Set(FEATURED_VENDOR_PORTALS.map((f) => f.id));
+const rawList = allVendorPortalsRaw as VendorPortal[];
+
+export const VENDOR_PORTALS: VendorPortal[] = [
+  ...FEATURED_VENDOR_PORTALS,
+  ...rawList.filter((p) => !featuredIds.has(p.id)),
 ];
 
 /**
