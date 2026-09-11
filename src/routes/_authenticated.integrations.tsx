@@ -87,19 +87,126 @@ function SheetsCard() {
   const [isPushing, setIsPushing] = useState<boolean>(false);
   const [copiedScript, setCopiedScript] = useState<boolean>(false);
 
+  const upsert = useUpsertIntegrationConfig();
+  const runSync = useRunSheetsSync();
+
   useEffect(() => {
     if (cfg.sheet_url) setSheetUrl(cfg.sheet_url);
     if (cfg.webhook_url) setWebhookUrl(cfg.webhook_url);
   }, [config]);
 
-  const isOAuthConnected = Boolean(config?.enabled && cfg.refresh_token);
+  // Handle Google OAuth Redirect Callback (#access_token=...)
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const hash = window.location.hash;
+    if (hash && hash.includes("access_token")) {
+      const params = new URLSearchParams(hash.substring(1));
+      const token = params.get("access_token");
+      if (token) {
+        window.history.replaceState(null, "", window.location.pathname);
+        finalizeOAuthConnection(token);
+      }
+    }
+  }, []);
+
+  async function finalizeOAuthConnection(token: string) {
+    const toastId = toast.loading("Finalizing Google account connection…");
+    try {
+      let userEmail = "Connected Google Account";
+      try {
+        const uRes = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (uRes.ok) {
+          const uData = await uRes.json();
+          if (uData.email) userEmail = uData.email;
+        }
+      } catch (e) {
+        console.warn("Could not fetch Google profile", e);
+      }
+
+      let createdId = cfg.sheet_id || "";
+      let createdUrl = cfg.sheet_url || "";
+
+      // If no sheet yet, automatically create one in user's Google Drive
+      if (!createdId) {
+        try {
+          const sRes = await fetch("https://sheets.googleapis.com/v4/spreadsheets", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              properties: { title: "Jobib — Requirements Pipeline" },
+            }),
+          });
+          if (sRes.ok) {
+            const sJson = await sRes.json();
+            createdId = sJson.spreadsheetId;
+            createdUrl = `https://docs.google.com/spreadsheets/d/${createdId}/edit`;
+            setSheetUrl(createdUrl);
+          }
+        } catch (sErr) {
+          console.warn("Auto sheet creation error", sErr);
+        }
+      }
+
+      await upsert.mutateAsync({
+        integration_type: "google_sheets",
+        enabled: true,
+        config: {
+          ...cfg,
+          access_token: token,
+          email: userEmail,
+          sheet_id: createdId,
+          sheet_url: createdUrl,
+          auto_new: true,
+          auto_status: true,
+        },
+      });
+
+      toast.success(`Connected as ${userEmail}!`, { id: toastId });
+    } catch (err: any) {
+      toast.error(err.message || "Failed to finalize connection", { id: toastId });
+    }
+  }
+
+  function handleConnectGoogleOAuth() {
+    const clientId =
+      (import.meta as any).env?.VITE_GOOGLE_CLIENT_ID ||
+      "756858024939-gv1l0jlli08batkho4nql3et875sd63m.apps.googleusercontent.com";
+    const redirectUri = `${window.location.origin}/integrations`;
+    const scopes = encodeURIComponent(
+      "https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/userinfo.email"
+    );
+    const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${encodeURIComponent(
+      redirectUri
+    )}&response_type=token&scope=${scopes}&prompt=consent`;
+
+    window.location.href = authUrl;
+  }
+
+  async function handleDisconnectOAuth() {
+    try {
+      await upsert.mutateAsync({
+        integration_type: "google_sheets",
+        enabled: false,
+        config: {
+          ...cfg,
+          access_token: null,
+          email: null,
+        },
+      });
+      toast.success("Google account disconnected");
+    } catch (e: any) {
+      toast.error(e.message || "Failed to disconnect");
+    }
+  }
+
+  const isOAuthConnected = Boolean(cfg.access_token || cfg.email);
   const isWebhookConnected = Boolean(webhookUrl.trim());
   const isConnected = isOAuthConnected || isWebhookConnected || Boolean(sheetUrl.trim());
-
-  const startOAuth = useStartGoogleOAuth();
-  const createSheet = useCreateSheet();
-  const runSync = useRunSheetsSync();
-  const upsert = useUpsertIntegrationConfig();
 
   const scriptCode = `function doPost(e) {
   try {
@@ -165,7 +272,41 @@ function SheetsCard() {
   async function handleRunSync() {
     setIsPushing(true);
     try {
-      if (webhookUrl.trim()) {
+      // 1. If Google OAuth token exists and sheet ID exists, push directly via official Google Sheets API v4
+      if (cfg.access_token && cfg.sheet_id) {
+        const rows = requirements.map((r: any) => [
+          r.title,
+          r.client_masked || r.vendor_name || "Direct Client",
+          (r.tech_stack ?? []).join(", "),
+          [r.location_city, r.location_state].filter(Boolean).join(", "),
+          r.rate_max ? `$${r.rate_min ? `${r.rate_min}-$` : ""}${r.rate_max}/hr` : "",
+          r.req_score,
+          r.source_type,
+          r.status,
+          r.posted_date,
+          [r.am_name, r.am_phone, r.am_email].filter(Boolean).join(" / "),
+        ]);
+
+        const appendRes = await fetch(
+          `https://sheets.googleapis.com/v4/spreadsheets/${cfg.sheet_id}/values/Sheet1!A1:append?valueInputOption=USER_ENTERED`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${cfg.access_token}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ values: rows }),
+          }
+        );
+
+        if (!appendRes.ok) {
+          throw new Error("Could not append rows to Google Sheet via API");
+        }
+
+        await runSync.mutateAsync();
+        toast.success(`Pushed ${rows.length} requirements directly to your Google Sheet!`);
+      } else if (webhookUrl.trim()) {
+        // 2. Push via Google Apps Script Webhook
         const payload = {
           action: "sync_requirements",
           requirements: requirements.map((r: any) => ({
@@ -182,7 +323,6 @@ function SheetsCard() {
           })),
         };
 
-        // Post to Google Apps Script Webhook (no-cors prevents redirect blocker)
         await fetch(webhookUrl.trim(), {
           method: "POST",
           mode: "no-cors",
@@ -200,15 +340,6 @@ function SheetsCard() {
       toast.error(e.message || "Sync failed");
     } finally {
       setIsPushing(false);
-    }
-  }
-
-  async function handleConnectOAuth() {
-    try {
-      const url = await startOAuth.mutateAsync();
-      window.open(url, "_blank", "width=500,height=650");
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Failed to start Google connection");
     }
   }
 
@@ -230,119 +361,154 @@ function SheetsCard() {
     >
       <div className="grid gap-6 lg:grid-cols-2">
         <div className="space-y-4">
-          {/* Method Selection Header */}
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              Connection Settings
-            </span>
-            <Dialog>
-              <DialogTrigger asChild>
-                <Button variant="ghost" size="sm" className="h-7 text-xs text-primary hover:text-primary">
-                  <HelpCircle className="mr-1 h-3.5 w-3.5" /> 1-Min Setup Guide
-                </Button>
-              </DialogTrigger>
-              <DialogContent className="max-w-xl">
-                <DialogHeader>
-                  <DialogTitle className="flex items-center gap-2">
-                    <FileSpreadsheet className="h-5 w-5 text-emerald-500" />
-                    How to Connect Any Google Sheet in 1 Minute
-                  </DialogTitle>
-                  <DialogDescription>
-                    No Google Cloud Console or billing required. Works on any Google account.
-                  </DialogDescription>
-                </DialogHeader>
-
-                <div className="space-y-3 py-2 text-xs">
-                  <ol className="list-decimal space-y-2 pl-4 text-foreground">
-                    <li>Open your Google Sheet (or create a new blank Google Sheet).</li>
-                    <li>In the menu bar, click <strong>Extensions ➔ Apps Script</strong>.</li>
-                    <li>Replace all code in the editor with the script below and click <strong>Save (Ctrl+S)</strong>.</li>
-                    <li>Click the blue <strong>Deploy ➔ New deployment</strong> button (top right).</li>
-                    <li>Select type: <strong>Web app</strong>. Under <em>"Who has access"</em>, choose <strong>"Anyone"</strong>.</li>
-                    <li>Click <strong>Deploy</strong>, copy the <strong>Web app URL</strong>, and paste it into the Webhook URL field in Jobib!</li>
-                  </ol>
-
-                  <div className="mt-3">
-                    <div className="flex items-center justify-between mb-1 font-semibold">
-                      <span>Apps Script Code:</span>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-6 px-2 text-[11px]"
-                        onClick={() => {
-                          navigator.clipboard.writeText(scriptCode);
-                          setCopiedScript(true);
-                          toast.success("Apps script copied to clipboard!");
-                          setTimeout(() => setCopiedScript(false), 2000);
-                        }}
-                      >
-                        {copiedScript ? <Check className="mr-1 h-3 w-3 text-emerald-500" /> : <Copy className="mr-1 h-3 w-3" />}
-                        {copiedScript ? "Copied!" : "Copy Script"}
-                      </Button>
-                    </div>
-                    <pre className="max-h-48 overflow-auto rounded bg-muted p-3 text-[11px] font-mono leading-relaxed text-muted-foreground">
-                      {scriptCode}
-                    </pre>
-                  </div>
-                </div>
-              </DialogContent>
-            </Dialog>
-          </div>
-
-          {/* Google Sheet URL */}
-          <div>
-            <Label className="text-xs font-medium">Google Sheet Link / URL</Label>
-            <div className="mt-1 flex gap-2">
-              <Input
-                value={sheetUrl}
-                onChange={(e) => setSheetUrl(e.target.value)}
-                placeholder="https://docs.google.com/spreadsheets/d/your-sheet-id/edit"
-                className="text-xs"
-              />
-              {sheetUrl && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => window.open(sheetUrl.startsWith("http") ? sheetUrl : `https://docs.google.com/spreadsheets/d/${sheetUrl}`, "_blank")}
-                  title="Open sheet in new tab"
-                >
-                  <ExternalLink className="h-3.5 w-3.5" />
-                </Button>
+          {/* Method 1: Official 1-Click Google OAuth */}
+          <div className="rounded-xl border border-border bg-surface p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                1-Click Google Account (SaaS Ready)
+              </span>
+              {isOAuthConnected && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold text-emerald-600">
+                  <CheckCircle2 className="h-3 w-3" /> Live
+                </span>
               )}
             </div>
+
+            {isOAuthConnected ? (
+              <div className="flex items-center justify-between rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3 text-xs">
+                <div>
+                  <div className="font-semibold text-foreground">Connected with Google</div>
+                  <div className="text-muted-foreground">{cfg.email || "Google Account Connected"}</div>
+                </div>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 text-xs text-muted-foreground hover:text-destructive"
+                  onClick={handleDisconnectOAuth}
+                >
+                  Disconnect
+                </Button>
+              </div>
+            ) : (
+              <Button
+                className="w-full flex items-center justify-center gap-2"
+                onClick={handleConnectGoogleOAuth}
+              >
+                <FileSpreadsheet className="h-4 w-4" /> Connect Google Account (1-Click OAuth)
+              </Button>
+            )}
           </div>
 
-          {/* Webhook Sync URL (Instant Apps Script) */}
-          <div>
+          {/* Method 2: Google Sheet Link & Manual Webhook */}
+          <div className="rounded-xl border border-border bg-surface p-4 space-y-3">
             <div className="flex items-center justify-between">
-              <Label className="text-xs font-medium">Google Apps Script Webhook URL (Recommended)</Label>
-              <span className="text-[10px] text-emerald-600 bg-emerald-500/10 px-1.5 py-0.5 rounded font-medium">
-                Instant / No OAuth
+              <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Sheet Link & Webhook Option
               </span>
-            </div>
-            <Input
-              value={webhookUrl}
-              onChange={(e) => setWebhookUrl(e.target.value)}
-              placeholder="https://script.google.com/macros/s/.../exec"
-              className="mt-1 text-xs font-mono"
-            />
-          </div>
+              <Dialog>
+                <DialogTrigger asChild>
+                  <Button variant="ghost" size="sm" className="h-6 text-[11px] text-primary hover:text-primary">
+                    <HelpCircle className="mr-1 h-3 w-3" /> 1-Min Script Guide
+                  </Button>
+                </DialogTrigger>
+                <DialogContent className="max-w-xl">
+                  <DialogHeader>
+                    <DialogTitle className="flex items-center gap-2">
+                      <FileSpreadsheet className="h-5 w-5 text-emerald-500" />
+                      How to Connect Any Google Sheet in 1 Minute
+                    </DialogTitle>
+                    <DialogDescription>
+                      Works with any Google Sheet without needing Google Cloud setup.
+                    </DialogDescription>
+                  </DialogHeader>
 
-          {/* Action buttons */}
-          <div className="flex items-center gap-2 pt-1">
-            <Button size="sm" onClick={handleSaveConfig} disabled={upsert.isPending} className="flex-1">
-              Save Configuration
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={handleRunSync}
-              disabled={isPushing || (!webhookUrl && !sheetUrl)}
-              className="flex-1"
-            >
-              {isPushing ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Send className="mr-1.5 h-3.5 w-3.5 text-primary" />}
-              Push Reqs to Sheet Now
-            </Button>
+                  <div className="space-y-3 py-2 text-xs">
+                    <ol className="list-decimal space-y-2 pl-4 text-foreground">
+                      <li>Open your Google Sheet (or create a new blank Google Sheet).</li>
+                      <li>In the menu bar, click <strong>Extensions ➔ Apps Script</strong>.</li>
+                      <li>Replace all code with the script below and click <strong>Save (Ctrl+S)</strong>.</li>
+                      <li>Click the blue <strong>Deploy ➔ New deployment</strong> button (top right).</li>
+                      <li>Select type: <strong>Web app</strong>. Under <em>"Who has access"</em>, choose <strong>"Anyone"</strong>.</li>
+                      <li>Click <strong>Deploy</strong>, copy the <strong>Web app URL</strong>, and paste it into the Webhook URL field!</li>
+                    </ol>
+
+                    <div className="mt-3">
+                      <div className="flex items-center justify-between mb-1 font-semibold">
+                        <span>Apps Script Code:</span>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-6 px-2 text-[11px]"
+                          onClick={() => {
+                            navigator.clipboard.writeText(scriptCode);
+                            setCopiedScript(true);
+                            toast.success("Apps script copied to clipboard!");
+                            setTimeout(() => setCopiedScript(false), 2000);
+                          }}
+                        >
+                          {copiedScript ? <Check className="mr-1 h-3 w-3 text-emerald-500" /> : <Copy className="mr-1 h-3 w-3" />}
+                          {copiedScript ? "Copied!" : "Copy Script"}
+                        </Button>
+                      </div>
+                      <pre className="max-h-48 overflow-auto rounded bg-muted p-3 text-[11px] font-mono leading-relaxed text-muted-foreground">
+                        {scriptCode}
+                      </pre>
+                    </div>
+                  </div>
+                </DialogContent>
+              </Dialog>
+            </div>
+
+            {/* Google Sheet URL */}
+            <div>
+              <Label className="text-xs font-medium">Google Sheet Link / URL</Label>
+              <div className="mt-1 flex gap-2">
+                <Input
+                  value={sheetUrl}
+                  onChange={(e) => setSheetUrl(e.target.value)}
+                  placeholder="https://docs.google.com/spreadsheets/d/your-sheet-id/edit"
+                  className="text-xs"
+                />
+                {sheetUrl && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => window.open(sheetUrl.startsWith("http") ? sheetUrl : `https://docs.google.com/spreadsheets/d/${sheetUrl}`, "_blank")}
+                    title="Open sheet in new tab"
+                  >
+                    <ExternalLink className="h-3.5 w-3.5" />
+                  </Button>
+                )}
+              </div>
+            </div>
+
+            {/* Webhook Sync URL */}
+            <div>
+              <Label className="text-xs font-medium">Google Apps Script Webhook URL (Optional)</Label>
+              <Input
+                value={webhookUrl}
+                onChange={(e) => setWebhookUrl(e.target.value)}
+                placeholder="https://script.google.com/macros/s/.../exec"
+                className="mt-1 text-xs font-mono"
+              />
+            </div>
+
+            {/* Action buttons */}
+            <div className="flex items-center gap-2 pt-1">
+              <Button size="sm" onClick={handleSaveConfig} disabled={upsert.isPending} className="flex-1">
+                Save Configuration
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleRunSync}
+                disabled={isPushing || (!isConnected)}
+                className="flex-1"
+              >
+                {isPushing ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Send className="mr-1.5 h-3.5 w-3.5 text-primary" />}
+                Push Reqs to Sheet Now
+              </Button>
+            </div>
           </div>
 
           {/* Auto-sync toggles */}
